@@ -1,7 +1,10 @@
 import type {
   AdminStatus,
   AppleMusicStatus,
+  BulkUserUpdate,
   Me,
+  Permission,
+  PermissionInfo,
   Playlist,
   QueueItem,
   Settings,
@@ -84,8 +87,10 @@ export const api = {
 
   // Admin
   users: () => request<{ users: User[] }>("GET", "/api/admin/users"),
-  patchUser: (id: number, patch: Partial<Pick<User, "is_admin" | "can_approve" | "can_manage_queue">>) =>
+  permissions: () => request<{ permissions: PermissionInfo[] }>("GET", "/api/admin/permissions"),
+  patchUser: (id: number, patch: { is_admin?: boolean; permissions?: Permission[] }) =>
     request<unknown>("PATCH", `/api/admin/users/${id}`, patch),
+  bulkUsers: (body: BulkUserUpdate) => request<{ ok: boolean; updated: number }>("POST", "/api/admin/users/bulk", body),
   deleteUser: (id: number) => request<unknown>("DELETE", `/api/admin/users/${id}`),
   settings: () => request<Settings>("GET", "/api/admin/settings"),
   patchSettings: (patch: Partial<Settings>) => request<Settings>("PATCH", "/api/admin/settings", patch),

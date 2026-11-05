@@ -11,9 +11,9 @@ import {
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToParentElement, restrictToVerticalAxis } from "@dnd-kit/modifiers";
-import { ArrowUpToLine, ChevronDown, ChevronUp, GripVertical, ListStart, Pause, Play, Plus, SkipForward, Trash2 } from "lucide-react";
+import { ArrowUpToLine, ChevronDown, ChevronUp, GripVertical, ListStart, MonitorSpeaker, Pause, Play, Plus, SkipForward, Trash2 } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { QueueItem, Track } from "../../api/types";
+import type { QueueItem, Track, User } from "../../api/types";
 import { useLive } from "../../hooks/live";
 import { useProgress } from "../../hooks/useProgress";
 import { Artwork } from "../../components/Artwork";
@@ -23,9 +23,17 @@ import { SourceBadge } from "../../components/SourceBadge";
 import { cx } from "../../util";
 import { PageHeader, flash } from "./common";
 import { TrackSearch } from "./TrackSearch";
+import { useConfirm } from "./ConfirmDialog";
+import { can } from "./permissions";
 
-export function QueueTab() {
+export function QueueTab({ me }: { me: User }) {
   const { state, clockOffset, refresh } = useLive();
+  const canAdd = can(me, "queue_add");
+  const canReorder = can(me, "queue_reorder");
+  const canRemove = can(me, "queue_remove");
+  const canSkip = can(me, "playback_skip");
+  const canPause = can(me, "playback_pause");
+  const [confirmDialog, confirm] = useConfirm();
   const np = state?.now_playing ?? null;
   const paused = state?.paused ?? false;
   const position = useProgress(np, clockOffset, paused, 500);
@@ -82,6 +90,17 @@ export function QueueTab() {
     if (item && to >= 0) move(item, to);
   };
 
+  const skip = async () => {
+    if (!np) return;
+    const ok = await confirm({
+      title: `Skip “${np.title}”?`,
+      description: "This skips the song for everyone listening on all devices.",
+      confirmLabel: "Skip for everyone",
+      icon: <SkipForward size={22} fill="currentColor" />,
+    });
+    if (ok) void run(() => api.skip(), `Skipped “${np.title}”`);
+  };
+
   const add = (t: Track, position: "next" | "end") =>
     run(() => api.queueAdd(t.id, position), position === "next" ? `“${t.title}” plays next` : `Added “${t.title}”`);
 
@@ -108,24 +127,46 @@ export function QueueTab() {
           ) : (
             <div className="muted">Add something below, or set a fallback playlist in Settings.</div>
           )}
-          <div className="np-card__controls">
-            {paused ? (
-              <button className="btn btn--primary" disabled={busy} onClick={() => run(() => api.resume())}>
-                <Play size={18} fill="currentColor" /> Resume
-              </button>
-            ) : (
-              <button className="btn" disabled={busy || !np} onClick={() => run(() => api.pause())}>
-                <Pause size={18} fill="currentColor" /> Pause
-              </button>
-            )}
-            <button className="btn" disabled={busy || !np} onClick={() => run(() => api.skip(), "Skipped")}>
-              <SkipForward size={18} fill="currentColor" /> Skip
-            </button>
-          </div>
+          {(canPause || canSkip) && (
+            <>
+              <div className="np-card__controls">
+                {canPause &&
+                  (paused ? (
+                    <button
+                      className="btn btn--primary"
+                      disabled={busy}
+                      onClick={() => run(() => api.resume(), "Resumed on every device")}
+                      title="Resume playback on every device"
+                    >
+                      <Play size={18} fill="currentColor" /> Resume
+                    </button>
+                  ) : (
+                    <button
+                      className="btn"
+                      disabled={busy || !np}
+                      onClick={() => run(() => api.pause(), "Paused on every device")}
+                      title="Pause playback on every device"
+                    >
+                      <Pause size={18} fill="currentColor" /> Pause
+                    </button>
+                  ))}
+                {canSkip && (
+                  <button className="btn" disabled={busy || !np} onClick={skip} title="Skip this song on every device">
+                    <SkipForward size={18} fill="currentColor" /> Skip
+                  </button>
+                )}
+              </div>
+              <p className="np-card__note">
+                <MonitorSpeaker size={14} aria-hidden />
+                {canPause && canSkip ? "Pause and skip apply" : canPause ? "Pause applies" : "Skip applies"} to every device in the room.
+              </p>
+            </>
+          )}
         </div>
       </section>
+      {confirmDialog}
 
-      <div className="queue-grid">
+      <div className={cx("queue-grid", !canAdd && "queue-grid--single")}>
         <section>
           <h2 className="section-title">
             Up next <span className="muted">{upcoming.length}</span>
@@ -138,7 +179,7 @@ export function QueueTab() {
                   Then from the playlist: {state.up_next_fallback.title} — {state.up_next_fallback.artist}
                 </span>
               ) : (
-                <span>Approve requests or add songs to keep the party going.</span>
+                <span>{canAdd ? "Approve requests or add songs to keep the party going." : "Approved requests will show up here."}</span>
               )}
             </div>
           ) : (
@@ -164,16 +205,19 @@ export function QueueTab() {
               <SortableContext items={upcoming.map((q) => q.id)} strategy={verticalListSortingStrategy}>
                 <ol className="list queue-list">
                   {upcoming.map((q, i) => (
-                    <SortableQueueRow key={q.id} item={q} disabled={busy}>
+                    <SortableQueueRow key={q.id} item={q} disabled={busy || !canReorder}>
                       {(handle) => (
                         <TrackRow
                           track={q.track}
                           index={i + 1}
                           className="card-row"
-                          lead={handle}
+                          lead={canReorder ? handle : undefined}
                           meta={<SourceBadge source={q.source} />}
                           actions={
+                            (canReorder || canRemove) && (
                             <div className="btn-group btn-group--icons">
+                              {canReorder && (
+                              <>
                               <button className="icon-btn" disabled={busy || i === 0} onClick={() => move(q, 0)} aria-label="Move to top" title="Move to top">
                                 <ArrowUpToLine size={18} />
                               </button>
@@ -189,6 +233,9 @@ export function QueueTab() {
                               >
                                 <ChevronDown size={18} />
                               </button>
+                              </>
+                              )}
+                              {canRemove && (
                               <button
                                 className="icon-btn icon-btn--danger"
                                 disabled={busy}
@@ -198,7 +245,9 @@ export function QueueTab() {
                               >
                                 <Trash2 size={18} />
                               </button>
+                              )}
                             </div>
+                            )
                           }
                         />
                       )}
@@ -213,6 +262,7 @@ export function QueueTab() {
           )}
         </section>
 
+        {canAdd && (
         <section>
           <h2 className="section-title">Add a song</h2>
           <TrackSearch
@@ -230,6 +280,7 @@ export function QueueTab() {
             )}
           />
         </section>
+        )}
       </div>
     </div>
   );

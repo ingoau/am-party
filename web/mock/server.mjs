@@ -6,7 +6,8 @@
 //   open http://localhost:8930/            (TV)   /request (guest)   /admin (host)
 //
 // /auth/login signs you in as a mock admin (cookie), /auth/logout signs out.
-// MOCK_USER=none|noperm|admin sets what /auth/login gives you (default admin).
+// MOCK_USER=none|noperm|admin|dj|approver|skipper sets what /auth/login gives you (default admin).
+// /auth/login?as=<user id> signs in as any mock user (handy for testing permission gating).
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -90,11 +91,36 @@ const requests = [
   { id: nextId++, track: TRACKS[5], status: "approved", created_at: now() - 900, decided_at: now() - 860, decided_by: "Sam Host", guest_label: "Guest 7F3A", guest: "x" },
   { id: nextId++, track: TRACKS[1], status: "rejected", created_at: now() - 1200, decided_at: now() - 1100, decided_by: "Sam Host", guest_label: "Guest 0B12", guest: "z" },
 ];
-const users = [
-  { id: 1, email: "sam@example.com", name: "Sam Host", picture: null, is_admin: true, can_approve: true, can_manage_queue: true },
-  { id: 2, email: "alex@example.com", name: "Alex Rivera", picture: null, is_admin: false, can_approve: true, can_manage_queue: false },
-  { id: 3, email: "jo@example.com", name: "Jo Newcomer", picture: null, is_admin: false, can_approve: false, can_manage_queue: false },
+// ---------- Permissions (mirrors backend/encore/auth.py) ----------
+const PERMISSIONS = [
+  { id: "approve_requests", label: "Approve requests", description: "Approve or reject songs guests request", group: "Requests" },
+  { id: "queue_add", label: "Add to queue", description: "Add songs straight to the queue without approval", group: "Queue" },
+  { id: "queue_reorder", label: "Reorder queue", description: "Move songs around in the queue", group: "Queue" },
+  { id: "queue_remove", label: "Remove from queue", description: "Take songs out of the queue", group: "Queue" },
+  { id: "playback_skip", label: "Skip songs", description: "Skip the current song for every device", group: "Playback" },
+  { id: "playback_pause", label: "Pause & resume", description: "Pause and resume playback for every device", group: "Playback" },
 ];
+const PERM_IDS = PERMISSIONS.map((p) => p.id);
+const cleanPerms = (v) => (Array.isArray(v) ? [...new Set(v.filter((p) => PERM_IDS.includes(p)))].sort() : []);
+const DJ = ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause"];
+
+const mkUser = (id, name, email, is_admin, granted, daysAgo, seenMinsAgo) => ({
+  id, name, email, picture: null, is_admin, granted: cleanPerms(granted),
+  created_at: now() - daysAgo * 86400, last_login: seenMinsAgo == null ? null : now() - seenMinsAgo * 60,
+});
+const users = [
+  mkUser(1, "Sam Host", "sam@example.com", true, [], 30, 2),
+  mkUser(2, "Alex Rivera", "alex@example.com", false, ["approve_requests"], 12, 15),
+  mkUser(3, "Jo Newcomer", "jo@example.com", false, [], 0, 1),
+  mkUser(4, "Priya Shah", "priya@example.com", false, DJ, 9, 40),
+  mkUser(5, "Marcus Chen", "marcus.chen@example.com", false, ["approve_requests", ...DJ], 20, 300),
+  mkUser(6, "Lena Fischer", "lena@example.com", false, ["queue_add", "playback_skip"], 3, 90),
+  mkUser(7, "Tomás Ortega", "tomas.ortega@example.com", false, [], 0, null),
+  mkUser(8, "Dana Okafor", "dana@example.com", true, [], 25, 1440),
+];
+const effective = (u) => (u.is_admin ? [...PERM_IDS] : u.granted);
+const publicUser = (u) => u && { ...u, permissions: effective(u) };
+const hasPerm = (u, perm) => !!u && (u.is_admin || (perm !== "admin" && u.granted.includes(perm)));
 const amState = {
   configured: true, ok: true, error: null, storefront: "us",
   developer_token_source: "db", developer_token_expires_at: now() + 86400 * 120,
@@ -149,8 +175,29 @@ function broadcast(obj, filter = () => true) {
   for (const s of sockets) if (filter(s)) wsSend(s, obj);
 }
 const broadcastState = () => broadcast({ type: "state", data: state() });
-const requestsChanged = () => broadcast({ type: "requests_changed" }, (s) => s.user?.can_approve);
-const usersChanged = () => broadcast({ type: "users_changed" }, (s) => s.user?.is_admin || s.user);
+const sockUser = (s) => users.find((u) => u.id === s.uid) || null;
+const requestsChanged = () => broadcast({ type: "requests_changed" }, (s) => hasPerm(sockUser(s), "approve_requests"));
+const usersChanged = () => broadcast({ type: "users_changed" }, (s) => s.uid != null); // every signed-in user
+
+/** Mirrors the backend's _apply_user_changes. Returns [status, error] on failure. */
+function applyUserChanges(ids, isAdmin, set, add, remove) {
+  const targets = ids.map((id) => users.find((u) => u.id === id));
+  if (targets.some((u) => !u)) return [404, "User not found"];
+  if (isAdmin === false) {
+    const admins = users.filter((u) => u.is_admin).length;
+    const demoting = targets.filter((u) => u.is_admin).length;
+    if (demoting && admins - demoting < 1) return [409, "Can't remove the last admin"];
+  }
+  for (const u of targets) {
+    const perms = new Set(set != null ? cleanPerms(set) : u.granted);
+    for (const p of cleanPerms(add)) perms.add(p);
+    for (const p of cleanPerms(remove)) perms.delete(p);
+    u.granted = [...perms].sort();
+    if (isAdmin != null) u.is_admin = !!isAdmin;
+  }
+  usersChanged();
+  return null;
+}
 
 // ---------- HTTP helpers ----------
 function cookies(req) {
@@ -189,7 +236,7 @@ const server = http.createServer(async (req, res) => {
   const guestCookie = { "Set-Cookie": `guest=${guest}; Path=/; HttpOnly; SameSite=Lax` };
   const need = (perm) => {
     if (!user) return err(res, 401, "Not signed in"), false;
-    if (!user[perm]) return err(res, 403, "Forbidden"), false;
+    if (!hasPerm(user, perm)) return err(res, 403, "Forbidden"), false;
     return true;
   };
   let m;
@@ -201,7 +248,9 @@ const server = http.createServer(async (req, res) => {
 
   // Auth
   if (p === "/auth/login") {
-    const target = LOGIN_AS === "none" ? null : LOGIN_AS === "noperm" ? 3 : 1;
+    const named = { none: null, admin: 1, noperm: 3, approver: 2, dj: 4, skipper: 6 };
+    const as = Number(url.searchParams.get("as"));
+    const target = users.some((u) => u.id === as) ? as : LOGIN_AS in named ? named[LOGIN_AS] : 1;
     res.writeHead(302, { Location: url.searchParams.get("next") || "/admin", ...(target ? { "Set-Cookie": `mock_uid=${target}; Path=/; SameSite=Lax` } : {}) });
     return res.end();
   }
@@ -213,9 +262,9 @@ const server = http.createServer(async (req, res) => {
 
   // Public API
   if (p === "/api/state") return json(res, 200, state());
-  if (p === "/api/me") return json(res, 200, { user, oidc_enabled: true, oidc_name: "Authentik" });
+  if (p === "/api/me") return json(res, 200, { user: publicUser(user), oidc_enabled: true, oidc_name: "Authentik" });
   if (p === "/api/search" || p === "/api/admin/search") {
-    if (p.startsWith("/api/admin") && !need("can_manage_queue")) return;
+    if (p.startsWith("/api/admin") && !need("queue_add")) return;
     const q = url.searchParams.get("q") || "";
     await new Promise((r) => setTimeout(r, 250));
     return json(res, 200, { tracks: search(q) }, guestCookie);
@@ -238,13 +287,13 @@ const server = http.createServer(async (req, res) => {
 
   // Approvers
   if (p === "/api/admin/requests") {
-    if (!need("can_approve")) return;
+    if (!need("approve_requests")) return;
     const st = url.searchParams.get("status") || "all";
     const list = requests.filter((r) => st === "all" || r.status === st).sort((a, b) => b.created_at - a.created_at);
     return json(res, 200, { requests: list.map((r) => strip(r, true)) });
   }
   if ((m = p.match(/^\/api\/admin\/requests\/(\d+)\/(approve|reject)$/)) && req.method === "POST") {
-    if (!need("can_approve")) return;
+    if (!need("approve_requests")) return;
     const r = requests.find((x) => x.id === Number(m[1]));
     if (!r) return err(res, 404, "Not found");
     if (r.status !== "pending") return err(res, 409, "Already decided");
@@ -263,7 +312,7 @@ const server = http.createServer(async (req, res) => {
 
   // Queue managers
   if (p === "/api/admin/queue" && req.method === "POST") {
-    if (!need("can_manage_queue")) return;
+    if (!need("queue_add")) return;
     const { track_id, position } = await readBody(req);
     const t = byId.get(track_id);
     if (!t) return err(res, 400, "Unknown track");
@@ -273,13 +322,13 @@ const server = http.createServer(async (req, res) => {
     return json(res, 201, { item });
   }
   if ((m = p.match(/^\/api\/admin\/queue\/(\d+)$/)) && req.method === "DELETE") {
-    if (!need("can_manage_queue")) return;
+    if (!need("queue_remove")) return;
     upcoming = upcoming.filter((u) => u.id !== Number(m[1]));
     broadcastState();
     return json(res, 200, {});
   }
   if ((m = p.match(/^\/api\/admin\/queue\/(\d+)\/move$/)) && req.method === "POST") {
-    if (!need("can_manage_queue")) return;
+    if (!need("queue_reorder")) return;
     const { index } = await readBody(req);
     const i = upcoming.findIndex((u) => u.id === Number(m[1]));
     if (i < 0) return err(res, 404, "Not found");
@@ -292,7 +341,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {});
   }
   if ((m = p.match(/^\/api\/admin\/player\/(skip|pause|resume)$/)) && req.method === "POST") {
-    if (!need("can_manage_queue")) return;
+    if (!need(m[1] === "skip" ? "playback_skip" : "playback_pause")) return;
     if (m[1] === "skip") { paused = false; advance(); }
     else if (m[1] === "pause" && !paused) { paused = true; pausedAt = now(); }
     else if (m[1] === "resume" && paused) { paused = false; nowPlaying.started_at += now() - pausedAt; }
@@ -301,27 +350,44 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Admin
+  if (p === "/api/admin/permissions") {
+    if (!user) return err(res, 401, "Not signed in");
+    return json(res, 200, { permissions: PERMISSIONS });
+  }
   if (p === "/api/admin/users") {
-    if (!need("is_admin")) return;
-    return json(res, 200, { users });
+    if (!need("admin")) return;
+    return json(res, 200, { users: users.map(publicUser) });
+  }
+  if (p === "/api/admin/users/bulk" && req.method === "POST") {
+    if (!need("admin")) return;
+    const body = await readBody(req);
+    const ids = body.user_ids;
+    if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isInteger)) return err(res, 400, "user_ids must be a non-empty list of ids");
+    for (const k of ["add", "remove", "set"]) if (body[k] != null && !Array.isArray(body[k])) return err(res, 400, `${k} must be a list`);
+    const r = applyUserChanges(ids, body.is_admin ?? null, body.set ?? null, body.add ?? [], body.remove ?? []);
+    if (r) return err(res, r[0], r[1]);
+    await new Promise((r) => setTimeout(r, 200));
+    return json(res, 200, { ok: true, updated: ids.length });
   }
   if ((m = p.match(/^\/api\/admin\/users\/(\d+)$/))) {
-    if (!need("is_admin")) return;
+    if (!need("admin")) return;
     const u = users.find((x) => x.id === Number(m[1]));
-    if (!u) return err(res, 404, "Not found");
+    if (!u) return err(res, 404, "User not found");
     if (req.method === "PATCH") {
       const body = await readBody(req);
-      if (body.is_admin === false && u.is_admin && users.filter((x) => x.is_admin).length === 1) return err(res, 409, "Can't remove the last admin");
-      for (const k of ["is_admin", "can_approve", "can_manage_queue"]) if (typeof body[k] === "boolean") u[k] = body[k];
+      if (body.permissions != null && !Array.isArray(body.permissions)) return err(res, 400, "permissions must be a list");
+      const r = applyUserChanges([u.id], body.is_admin ?? null, body.permissions ?? null, [], []);
+      if (r) return err(res, r[0], r[1]);
     } else if (req.method === "DELETE") {
-      if (u.is_admin && users.filter((x) => x.is_admin).length === 1) return err(res, 409, "Can't remove the last admin");
+      if (u.is_admin && users.filter((x) => x.is_admin).length === 1) return err(res, 409, "Can't delete the last admin");
+      if (u.id === user.id) return err(res, 409, "You can't delete yourself");
       users.splice(users.indexOf(u), 1);
+      usersChanged();
     }
-    usersChanged();
-    return json(res, 200, {});
+    return json(res, 200, { ok: true });
   }
   if (p === "/api/admin/settings") {
-    if (!need("is_admin")) return;
+    if (!need("admin")) return;
     if (req.method === "PATCH") {
       Object.assign(settings, await readBody(req));
       broadcastState();
@@ -329,7 +395,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, settings);
   }
   if (p === "/api/admin/playlists") {
-    if (!need("is_admin")) return;
+    if (!need("admin")) return;
     return json(res, 200, {
       playlists: ["Party Classics", "Late Night Grooves", "Indie Summer", "90s Throwbacks", "Disco Fever", "Chill Sunday"].map((name, i) => ({
         id: `p.mock${i + 1}`, name, artwork_url: `/mock-art/${i + 2}/600x600bb.svg`,
@@ -337,14 +403,14 @@ const server = http.createServer(async (req, res) => {
     });
   }
   if (p === "/api/admin/playlists/resolve" && req.method === "POST") {
-    if (!need("is_admin")) return;
+    if (!need("admin")) return;
     const { url_or_id } = await readBody(req);
     const pl = String(url_or_id || "").match(/pl\.[\w-]+/);
     if (!pl) return err(res, 400, "That doesn't look like an Apple Music playlist link");
     return json(res, 200, { id: pl[0], name: "Resolved Catalog Playlist" });
   }
   if (p === "/api/admin/status") {
-    if (!need("is_admin")) return;
+    if (!need("admin")) return;
     return json(res, 200, {
       apple_music: { configured: true, ok: true, error: null },
       smart_fades: { available: false, error: "analysis model not installed" },
@@ -353,7 +419,7 @@ const server = http.createServer(async (req, res) => {
     });
   }
   if (p === "/api/admin/apple-music") {
-    if (!need("is_admin")) return;
+    if (!need("admin")) return;
     if (req.method === "PUT") {
       const b = await readBody(req);
       if (typeof b.developer_token === "string") {
@@ -389,7 +455,7 @@ server.on("upgrade", (req, sock) => {
   const key = req.headers["sec-websocket-key"];
   const accept = crypto.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
   sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-  sock.user = currentUser(req);
+  sock.uid = currentUser(req)?.id ?? null;
   sockets.add(sock);
   wsSend(sock, { type: "state", data: state() });
   sock.on("data", (buf) => {

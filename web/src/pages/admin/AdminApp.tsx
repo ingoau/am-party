@@ -9,13 +9,14 @@ import { RequestsTab } from "./RequestsTab";
 import { QueueTab } from "./QueueTab";
 import { UsersTab } from "./UsersTab";
 import { SettingsTab } from "./SettingsTab";
+import { can, canQueueTab } from "./permissions";
 import "../../styles/admin.css";
 
 type Section = { path: string; label: string; icon: ReactNode; allowed: (u: User) => boolean };
 
 const SECTIONS: Section[] = [
-  { path: "requests", label: "Requests", icon: <Inbox size={20} />, allowed: (u) => u.can_approve },
-  { path: "queue", label: "Queue", icon: <ListMusic size={20} />, allowed: (u) => u.can_manage_queue },
+  { path: "requests", label: "Requests", icon: <Inbox size={20} />, allowed: (u) => can(u, "approve_requests") },
+  { path: "queue", label: "Queue", icon: <ListMusic size={20} />, allowed: canQueueTab },
   { path: "users", label: "People", icon: <Users size={20} />, allowed: (u) => u.is_admin },
   { path: "settings", label: "Settings", icon: <Settings size={20} />, allowed: (u) => u.is_admin },
 ];
@@ -35,7 +36,7 @@ export default function AdminApp() {
       .catch((e) => setError(e instanceof ApiError ? e.message : "Couldn't load your account."));
   }, []);
   useEffect(load, [load]);
-  // Permission changes may affect us.
+  // Sent to every signed-in user whenever anyone's permissions change — ours may have too.
   useLiveEvent("users_changed", load);
 
   useEffect(() => {
@@ -139,8 +140,8 @@ export default function AdminApp() {
       <main className="admin__main">
         <Routes>
           <Route index element={<Navigate to={`/admin/${allowed[0].path}`} replace />} />
-          {user.can_approve && <Route path="requests/*" element={<RequestsTab />} />}
-          {user.can_manage_queue && <Route path="queue" element={<QueueTab />} />}
+          {can(user, "approve_requests") && <Route path="requests/*" element={<RequestsTab />} />}
+          {canQueueTab(user) && <Route path="queue" element={<QueueTab me={user} />} />}
           {user.is_admin && <Route path="users" element={<UsersTab me={user} />} />}
           {user.is_admin && <Route path="settings" element={<SettingsTab />} />}
           <Route path="*" element={<Navigate to={`/admin/${allowed[0].path}`} replace />} />

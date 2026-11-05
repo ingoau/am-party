@@ -48,14 +48,60 @@ export type SongRequest = {
   guest_label: string;
 };
 
+export type Permission =
+  | "approve_requests"
+  | "queue_add"
+  | "queue_reorder"
+  | "queue_remove"
+  | "playback_skip"
+  | "playback_pause";
+
+export const ALL_PERMISSIONS: readonly Permission[] = [
+  "approve_requests",
+  "queue_add",
+  "queue_reorder",
+  "queue_remove",
+  "playback_skip",
+  "playback_pause",
+];
+
+/** Anything that unlocks the Queue tab. */
+export const QUEUE_PERMISSIONS: readonly Permission[] = [
+  "queue_add",
+  "queue_reorder",
+  "queue_remove",
+  "playback_skip",
+  "playback_pause",
+];
+
+export type PermissionInfo = {
+  id: Permission;
+  label: string;
+  description: string;
+  group: string;
+};
+
 export type User = {
   id: number;
   email: string | null;
   name: string;
   picture: string | null;
+  /** Admins have every permission plus users/settings. */
   is_admin: boolean;
-  can_approve: boolean;
-  can_manage_queue: boolean;
+  /** Effective permissions (all of them for admins). */
+  permissions: Permission[];
+  /** Explicitly granted permissions (what the admin UI toggles). */
+  granted: Permission[];
+  created_at?: number;
+  last_login?: number | null;
+};
+
+export type BulkUserUpdate = {
+  user_ids: number[];
+  add?: Permission[];
+  remove?: Permission[];
+  set?: Permission[];
+  is_admin?: boolean;
 };
 
 export type Me = {
