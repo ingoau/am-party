@@ -259,7 +259,12 @@ class Party:
                 "started_at": eng.now.started_at,
             }
         upcoming = [
-            {"id": q["id"], "track": q["track"].to_dict(), "source": q["source"]}
+            {
+                "id": q["id"],
+                "track": q["track"].to_dict(),
+                "source": q["source"],
+                "request_id": q.get("request_id"),
+            }
             for q in self.queue
         ]
         # the locked (already mixing) item first
@@ -396,11 +401,63 @@ class Party:
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         return self._request_out(row, admin=False)
 
+    def _queue_positions(self) -> dict[int, tuple[int, float]]:
+        """request_id -> (1-based position in upcoming, seconds until it starts)."""
+        eng = self.engine
+        wait = 0.0
+        if eng and eng.now:
+            wait = max(0.0, eng.now.prepared.duration - eng.position())
+        order = list(self.queue)
+        locked = self._locked_id()
+        order.sort(key=lambda q: 0 if q["id"] == locked else 1)
+        out: dict[int, tuple[int, float]] = {}
+        for i, q in enumerate(order):
+            if q.get("request_id") is not None:
+                out[q["request_id"]] = (i + 1, wait)
+            wait += q["track"].duration or 0
+        return out
+
     async def my_requests(self, guest_id: str) -> list[dict[str, Any]]:
         rows = await self.db.fetchall(
             "SELECT * FROM requests WHERE guest_id=? ORDER BY id DESC LIMIT 50", guest_id
         )
-        return [self._request_out(r, admin=False) for r in rows]
+        positions = self._queue_positions()
+        out = []
+        for r in rows:
+            item = self._request_out(r, admin=False)
+            if r["id"] in positions:
+                pos, wait = positions[r["id"]]
+                item["queue_position"] = pos
+                item["eta_seconds"] = round(wait)
+            item["can_withdraw"] = r["status"] == "pending" or (
+                r["status"] == "approved" and r["id"] in positions and not self._is_locked_request(r["id"])
+            )
+            out.append(item)
+        return out
+
+    def _is_locked_request(self, request_id: int) -> bool:
+        locked = self._locked_id()
+        return any(q["id"] == locked and q.get("request_id") == request_id for q in self.queue)
+
+    async def withdraw_request(self, guest_id: str, rid: int) -> None:
+        row = await self.db.fetchone("SELECT * FROM requests WHERE id=? AND guest_id=?", rid, guest_id)
+        if not row:
+            raise ApiError(404, "Request not found")
+        if row["status"] == "approved":
+            item = next((q for q in self.queue if q.get("request_id") == rid), None)
+            if not item:
+                raise ApiError(409, "That song has already played")
+            if item["id"] == self._locked_id():
+                raise ApiError(409, "Too late, that song is about to start")
+            await self.db.execute("DELETE FROM queue WHERE id=?", item["id"])
+            self.queue = [q for q in self.queue if q["id"] != item["id"]]
+            self._after_queue_change()
+        elif row["status"] != "pending":
+            raise ApiError(409, f"Request was already {row['status']}")
+        await self.db.execute(
+            "UPDATE requests SET status='withdrawn', decided_at=? WHERE id=?", now(), rid
+        )
+        await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
 
     async def list_requests(self, status: str | None) -> list[dict[str, Any]]:
         sql = (

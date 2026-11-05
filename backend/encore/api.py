@@ -132,6 +132,16 @@ async def create_request(request: web.Request) -> web.Response:
     return resp
 
 
+@routes.delete("/api/requests/{id}")
+async def withdraw_request(request: web.Request) -> web.Response:
+    csrf_check(request)
+    gid, new = guest_id(request)
+    if new:
+        raise ApiError(404, "Request not found")
+    await enc(request).party.withdraw_request(gid, int_param(request, "id"))
+    return web.json_response({"ok": True})
+
+
 @routes.get("/api/requests/mine")
 async def my_requests(request: web.Request) -> web.Response:
     gid, new = guest_id(request)

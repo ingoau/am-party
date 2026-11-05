@@ -20,6 +20,7 @@ type QueueItem = {
   id: number;
   track: Track;
   source: "request" | "admin" | "fallback";
+  request_id: number | null;   // set for approved guest requests (match against /api/requests/mine)
 };
 
 type NowPlaying = Track & {
@@ -44,7 +45,10 @@ type State = {
 type Request = {
   id: number;
   track: Track;
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "approved" | "rejected" | "withdrawn";
+  queue_position?: number;      // /api/requests/mine only: 1-based position in upcoming while queued
+  eta_seconds?: number;         // /api/requests/mine only: estimated seconds until it starts
+  can_withdraw?: boolean;       // /api/requests/mine only
   created_at: number;
   decided_at: number | null;
   decided_by: string | null;    // user display name (admin views only)
@@ -71,6 +75,7 @@ type User = {
 | GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in users with `approve_requests` also get `{"type":"requests_changed"}`; all signed-in users get `{"type":"users_changed"}` (refetch `/api/me`, admins also the user list). Client may send `{"type":"ping"}`. |
 | GET | `/api/search?q=...` | `{tracks: Track[]}`. Rate limited per guest. 503 if Apple Music not configured. |
 | POST | `/api/requests` | body `{track_id}` (must come from a recent search). `201 {request: Request}`. 429 with `{error}` when rate limited or too many pending; 409 if already queued/pending; 403 if requests closed. Sets anonymous guest cookie. |
+| DELETE | `/api/requests/{id}` | guest withdraws their own request (pending, or approved and still queued but not yet being mixed in); 409 otherwise |
 | GET | `/api/requests/mine` | `{requests: Request[]}` for this browser (no admin fields) |
 | GET | `/api/me` | `{user: User \| null, oidc_enabled: boolean, oidc_name: string}` |
 | GET | `/auth/login?next=/admin` | redirects to the OIDC provider |
