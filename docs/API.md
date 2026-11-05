@@ -120,7 +120,7 @@ type Settings = {
 
 ### Apple Music connection (admin)
 
-Tokens can come from env/secret files (take precedence) or be set from the UI (stored in the DB).
+Tokens can come from env/secret files or be set from the UI (stored in the DB; UI-set values take precedence).
 
 | Method | Path | Notes |
 |---|---|---|

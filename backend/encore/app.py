@@ -148,17 +148,15 @@ class Encore:
         )
 
     # -- apple music credentials -----------------------------------------------------
+    # Tokens set from the admin UI (stored in the DB) win over env/secret files, so a
+    # fresh MusicKit sign-in always takes effect.
     async def developer_token(self) -> str | None:
-        if self.config.apple_music_developer_token:
-            return self.config.apple_music_developer_token
         row = await self.db.get_credential("apple_developer_token")
-        return row[0] if row else None
+        return row[0] if row else self.config.apple_music_developer_token
 
     async def user_token(self) -> str | None:
-        if self.config.apple_music_user_token:
-            return self.config.apple_music_user_token
         row = await self.db.get_credential("apple_user_token")
-        return row[0] if row else None
+        return row[0] if row else self.config.apple_music_user_token
 
     async def update_apple_credentials(
         self, developer_token: str | None = None, user_token: str | None = None
@@ -183,13 +181,13 @@ class Encore:
             "ok": bool(self.apple.configured) and not self.party.apple_error,
             "error": self.party.apple_error,
             "storefront": getattr(self.apple, "storefront", None),
-            "developer_token_source": "env"
-            if self.config.apple_music_developer_token
-            else ("db" if dev_row else None),
+            "developer_token_source": "db"
+            if dev_row
+            else ("env" if self.config.apple_music_developer_token else None),
             "developer_token_expires_at": developer_token_expiry(dev) if dev else None,
-            "user_token_source": "env"
-            if self.config.apple_music_user_token
-            else ("db" if user_row else None),
+            "user_token_source": "db"
+            if user_row
+            else ("env" if self.config.apple_music_user_token else None),
             "user_token_set_at": user_row[1] if user_row else None,
             "widevine": bool(
                 self.config.widevine_client_id_path and self.config.widevine_private_key_path
