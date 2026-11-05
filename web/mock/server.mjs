@@ -283,6 +283,9 @@ const server = http.createServer(async (req, res) => {
     const { index } = await readBody(req);
     const i = upcoming.findIndex((u) => u.id === Number(m[1]));
     if (i < 0) return err(res, 404, "Not found");
+    // Mirror the backend: the head of the queue can't move once it's being mixed in (last 15s of the current track).
+    if (i === 0 && nowPlaying && !paused && nowPlaying.started_at + nowPlaying.track.duration - now() < 15)
+      return err(res, 409, "That track is already being mixed in");
     const [it] = upcoming.splice(i, 1);
     upcoming.splice(Math.max(0, Math.min(upcoming.length, index)), 0, it);
     broadcastState();

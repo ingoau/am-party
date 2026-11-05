@@ -644,8 +644,10 @@
     bottom: calc(80px + env(safe-area-inset-bottom));
     border-radius: 18px;
   }
-  .toast {
-    bottom: calc(90px + env(safe-area-inset-bottom));
+  /* Keep toasts above the bottom tab bar. */
+  .admin [data-sonner-toaster][data-y-position="bottom"] {
+    --offset-bottom: calc(90px + env(safe-area-inset-bottom)) !important;
+    --mobile-offset-bottom: calc(90px + env(safe-area-inset-bottom)) !important;
   }
   .card-row {
     flex-wrap: wrap;
@@ -714,4 +716,31 @@
   .input-group {
     flex-direction: column;
   }
+}
+
+/* ---------- Drag-to-reorder (queue) ---------- */
+.queue-item {
+  position: relative;
+}
+.queue-item.is-dragging {
+  z-index: 10;
+}
+.queue-item.is-dragging .card-row {
+  background: var(--surface-3);
+  box-shadow: var(--shadow);
+}
+.drag-handle {
+  width: 28px;
+  height: 42px;
+  margin-left: -6px;
+  border-radius: 8px;
+  color: var(--faint);
+  cursor: grab;
+  touch-action: none;
+}
+.drag-handle:hover:not(:disabled) {
+  color: var(--text);
+}
+.queue-item.is-dragging .drag-handle {
+  cursor: grabbing;
 }

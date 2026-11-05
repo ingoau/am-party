@@ -6,6 +6,7 @@ privileges until an admin grants them.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -17,6 +18,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import aiohttp
+import jwt
 from aiohttp import web
 
 from .config import Config
@@ -72,19 +74,7 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def _decode_jwt_claims(token: str) -> dict[str, Any]:
-    """Decode JWT payload without verifying.
-
-    Only used for the id_token we receive directly from the token endpoint over TLS
-    (OIDC core 3.1.3.7 allows TLS server validation in place of signature checks for
-    the code flow). We still check iss/aud/nonce.
-    """
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload))
-    except (IndexError, ValueError):
-        return {}
+ID_TOKEN_LEEWAY = 120
 
 
 class AuthManager:
@@ -95,6 +85,7 @@ class AuthManager:
         self._discovery: dict[str, Any] | None = None
         self._discovery_at = 0.0
         self._pending: dict[str, dict[str, Any]] = {}
+        self._jwks: jwt.PyJWKClient | None = None
 
     # -- OIDC ------------------------------------------------------------------
     async def discovery(self) -> dict[str, Any]:
@@ -110,6 +101,25 @@ class AuthManager:
     @property
     def redirect_uri(self) -> str:
         return f"{self.config.public_url}/auth/callback"
+
+    async def verify_id_token(self, id_token: str, disc: dict[str, Any]) -> dict[str, Any]:
+        """Verify the id_token signature (JWKS), audience, expiry and issuer."""
+        if self._jwks is None or self._jwks.uri != disc["jwks_uri"]:
+            self._jwks = jwt.PyJWKClient(disc["jwks_uri"], cache_keys=True, lifespan=3600)
+        signing_key = await asyncio.to_thread(self._jwks.get_signing_key_from_jwt, id_token)
+        algorithms = disc.get("id_token_signing_alg_values_supported") or ["RS256"]
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=[a for a in algorithms if a != "none"],
+            audience=self.config.oidc_client_id,
+            leeway=ID_TOKEN_LEEWAY,
+            options={"require": ["exp", "iat", "sub"], "verify_iss": False},
+        )
+        # issuers differ in trailing-slash handling (e.g. Authentik), compare normalised
+        if str(claims.get("iss", "")).rstrip("/") != self.config.oidc_issuer:
+            raise jwt.InvalidIssuerError("issuer mismatch")
+        return claims
 
     async def login_redirect(self, request: web.Request) -> web.Response:
         if not self.config.oidc_enabled:
@@ -172,15 +182,13 @@ class AuthManager:
 
         claims: dict[str, Any] = {}
         if id_token := body.get("id_token"):
-            claims = _decode_jwt_claims(id_token)
-            aud = claims.get("aud")
-            auds = aud if isinstance(aud, list) else [aud]
-            if (
-                claims.get("iss", "").rstrip("/") != self.config.oidc_issuer
-                or self.config.oidc_client_id not in auds
-                or claims.get("nonce") != pending["nonce"]
-            ):
-                raise web.HTTPBadRequest(text="Login failed (id_token validation).")
+            try:
+                claims = await self.verify_id_token(id_token, disc)
+            except jwt.PyJWTError as err:
+                LOGGER.warning("id_token validation failed: %s", err)
+                raise web.HTTPBadRequest(text="Login failed (id_token validation).") from err
+            if claims.get("nonce") != pending["nonce"]:
+                raise web.HTTPBadRequest(text="Login failed (nonce mismatch).")
         if access_token := body.get("access_token"):
             if userinfo_ep := disc.get("userinfo_endpoint"):
                 async with self.http.get(

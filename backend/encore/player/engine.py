@@ -264,7 +264,9 @@ class Engine:
             mode = "standard"
         return mode, float(s.get("crossfade_duration", 8))
 
-    async def _write_chunks(self, pcm: bytes) -> tuple[float | None, bool]:
+    async def _write_chunks(
+        self, pcm: bytes, on_first: Callable[[float], None] | None = None
+    ) -> tuple[float | None, bool]:
         """Write pcm in chunks. Returns (time first sample is heard, interrupted)."""
         first: float | None = None
         step = seconds_to_bytes(CHUNK_SECONDS)
@@ -274,6 +276,8 @@ class Engine:
             t = await self.output.write(pcm[off : off + step])
             if first is None:
                 first = t
+                if on_first:
+                    on_first(t)
         return first, False
 
     def _interrupted(self) -> bool:
@@ -364,11 +368,23 @@ class Engine:
             nitem, res = result
             self.last_transition = res.mode_used
             res.pcm = _soft_limit(res.pcm)
-            t0, interrupted = await self._write_chunks(res.pcm)
-            if t0 is None:
-                t0 = time.time()
-            next_started = t0 + res.in_start_offset
-            self._schedule_handover(nxt, nitem, next_started, t0 + res.handover_offset)
+            LOGGER.info(
+                "Transition %s -> %s: %s, %.1fs",
+                item.track.title,
+                nitem.track.title,
+                res.mode_used,
+                len(res.pcm) / BYTES_PER_SECOND,
+            )
+            scheduled: list[float] = []
+
+            def _on_first(t0: float, nxt=nxt, nitem=nitem, res=res) -> None:  # noqa: ANN001
+                scheduled.append(t0 + res.in_start_offset)
+                self._schedule_handover(nxt, nitem, scheduled[0], t0 + res.handover_offset)
+
+            t0, interrupted = await self._write_chunks(res.pcm, _on_first)
+            if not scheduled:
+                _on_first(t0 if t0 is not None else time.time())
+            next_started = scheduled[0]
             if interrupted:
                 # we were mid-transition; treat incoming track as current
                 self._cancel_handovers()

@@ -3,7 +3,7 @@ import { api } from "../../api/client";
 import type { Track } from "../../api/types";
 import { useDebounced } from "../../hooks/useDebounced";
 import { TrackRow } from "../../components/TrackRow";
-import { IconSearch, IconX } from "../../components/Icons";
+import { Search, X } from "lucide-react";
 
 /** Admin catalog search (no guest rate limit). */
 export function TrackSearch({ actions, placeholder }: { actions: (t: Track) => ReactNode; placeholder?: string }) {
@@ -37,7 +37,7 @@ export function TrackSearch({ actions, placeholder }: { actions: (t: Track) => R
   return (
     <div className="track-search">
       <div className="search">
-        <IconSearch size={20} className="search__icon" />
+        <Search size={20} className="search__icon" aria-hidden />
         <input
           className="search__input"
           type="search"
@@ -48,7 +48,7 @@ export function TrackSearch({ actions, placeholder }: { actions: (t: Track) => R
         />
         {query && (
           <button className="search__clear" type="button" aria-label="Clear search" onClick={() => setQuery("")}>
-            <IconX size={18} />
+            <X size={18} />
           </button>
         )}
       </div>

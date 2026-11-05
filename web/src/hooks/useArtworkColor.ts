@@ -1,3 +1,4 @@
+import { FastAverageColor } from "fast-average-color";
 import { useEffect, useState } from "react";
 
 export type Rgb = [number, number, number];
@@ -30,37 +31,23 @@ function hslToRgb(h: number, s: number, l: number): Rgb {
   return [hue(p, q, h + 1 / 3), hue(p, q, h), hue(p, q, h - 1 / 3)].map((v) => Math.round(v * 255)) as Rgb;
 }
 
-/** Pick a vivid-ish dominant colour from the image and normalise it so it reads on a dark UI. */
-function sample(img: HTMLImageElement): Rgb | null {
-  const size = 32;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
-  ctx.drawImage(img, 0, 0, size, size);
-  let data: Uint8ClampedArray;
-  try {
-    data = ctx.getImageData(0, 0, size, size).data; // throws if the canvas is tainted
-  } catch {
-    return null;
-  }
-  // Bucket by hue, weight by saturation so a colourful accent beats large grey areas.
-  const buckets = new Map<number, { w: number; r: number; g: number; b: number }>();
-  for (let i = 0; i < data.length; i += 4) {
-    const px: Rgb = [data[i], data[i + 1], data[i + 2]];
-    const [h, s, l] = rgbToHsl(px);
-    if (l < 0.08 || l > 0.95) continue;
-    const w = 0.05 + s * s * (1 - Math.abs(l - 0.5));
-    const key = Math.round(h * 18) % 18;
-    const bk = buckets.get(key) ?? { w: 0, r: 0, g: 0, b: 0 };
-    bk.w += w; bk.r += px[0] * w; bk.g += px[1] * w; bk.b += px[2] * w;
-    buckets.set(key, bk);
-  }
-  let best: { w: number; r: number; g: number; b: number } | null = null;
-  for (const b of buckets.values()) if (!best || b.w > best.w) best = b;
-  if (!best || best.w === 0) return null;
-  const avg: Rgb = [best.r / best.w, best.g / best.w, best.b / best.w];
-  const [h, s, l] = rgbToHsl(avg);
+const fac = new FastAverageColor();
+
+/** Dominant colour of the artwork (via fast-average-color), normalised so it reads as an accent on a dark UI. */
+async function sample(url: string): Promise<Rgb | null> {
+  const res = await fac.getColorAsync(url, {
+    algorithm: "dominant",
+    crossOrigin: "anonymous",
+    mode: "speed",
+    silent: true,
+    // Skip near-black / near-white pixels so letterboxing and white covers don't win.
+    ignoredColor: [
+      [0, 0, 0, 255, 24],
+      [255, 255, 255, 255, 16],
+    ],
+  });
+  if (res.error) return null; // e.g. tainted canvas (no CORS headers)
+  const [h, s, l] = rgbToHsl([res.value[0], res.value[1], res.value[2]]);
   // Keep it bright & saturated enough to work as an accent on near-black.
   return hslToRgb(h, s < 0.12 ? s : Math.max(0.45, Math.min(0.9, s)), Math.max(0.55, Math.min(0.72, l)));
 }
@@ -78,19 +65,12 @@ export function useArtworkColor(url: string | null | undefined): Rgb | null {
       return;
     }
     let cancelled = false;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.decoding = "async";
-    img.onload = () => {
-      const c = sample(img);
-      cache.set(url, c);
-      if (!cancelled) setColor(c);
-    };
-    img.onerror = () => {
-      cache.set(url, null);
-      if (!cancelled) setColor(null);
-    };
-    img.src = url;
+    sample(url)
+      .catch(() => null)
+      .then((c) => {
+        cache.set(url, c);
+        if (!cancelled) setColor(c);
+      });
     return () => {
       cancelled = true;
     };

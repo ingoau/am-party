@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { Track } from "../api/types";
 import { cx, fmtTime } from "../util";
 import { Artwork } from "./Artwork";
-import { IconExplicit } from "./Icons";
+import { SquareLetterE } from "lucide-react";
 
 export function TrackRow({
   track,
@@ -11,6 +11,7 @@ export function TrackRow({
   className,
   dim,
   index,
+  lead,
 }: {
   track: Track;
   meta?: ReactNode;
@@ -18,15 +19,18 @@ export function TrackRow({
   className?: string;
   dim?: boolean;
   index?: number;
+  /** Optional leading element (e.g. a drag handle). */
+  lead?: ReactNode;
 }) {
   return (
     <div className={cx("track-row", dim && "track-row--dim", className)}>
+      {lead}
       {index !== undefined && <span className="track-row__index">{index}</span>}
       <Artwork url={track.artwork_url} size={120} className="track-row__art" />
       <div className="track-row__text">
         <div className="track-row__title">
           <span className="truncate">{track.title}</span>
-          {track.explicit && <IconExplicit size={14} className="explicit" aria-label="Explicit" />}
+          {track.explicit && <SquareLetterE size={14} className="explicit" role="img" aria-label="Explicit" />}
         </div>
         <div className="track-row__sub truncate">
           {track.artist}

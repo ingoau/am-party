@@ -629,33 +629,27 @@ input:focus-visible + .switch {
   border: 1px solid rgba(255, 93, 108, 0.25);
 }
 
-.toast {
-  position: fixed;
-  left: 50%;
-  bottom: calc(20px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  z-index: 100;
-  width: max-content;
-  max-width: min(520px, calc(100vw - 32px));
+/* Toasts (sonner) */
+/* `body` bumps specificity above sonner's injected theme rules. */
+body [data-sonner-toaster][data-sonner-theme] {
+  --normal-bg: #1d1d27;
+  --normal-border: rgba(61, 220, 151, 0.35);
+  --normal-text: var(--text);
+  --border-radius: 14px;
+  font-family: var(--font);
+}
+[data-sonner-toaster] [data-sonner-toast].toast {
   padding: 14px 20px;
-  border-radius: 14px;
-  background: #1d1d27;
-  border: 1px solid rgba(61, 220, 151, 0.35);
   box-shadow: var(--shadow);
   font-weight: 600;
   font-size: 0.95rem;
-  animation: toast-in 0.3s var(--ease);
-  cursor: pointer;
 }
-.toast--err {
+[data-sonner-toast].toast[data-type="success"] [data-icon] {
+  color: var(--ok);
+}
+[data-sonner-toast].toast[data-type="error"] {
   border-color: rgba(255, 93, 108, 0.45);
   color: #ffb3ba;
-}
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 12px);
-  }
 }
 
 /* Spinner & skeleton */

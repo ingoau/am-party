@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { artworkAt, cx } from "../util";
-import { IconMusic } from "./Icons";
+import { Music } from "lucide-react";
 
 export function Artwork({
   url,
@@ -18,7 +18,7 @@ export function Artwork({
   if (!src || failed === src) {
     return (
       <div className={cx("artwork artwork--empty", className)} role="img" aria-label={alt || "No artwork"}>
-        <IconMusic size={32} />
+        <Music size={32} aria-hidden />
       </div>
     );
   }

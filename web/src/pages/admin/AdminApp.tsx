@@ -3,7 +3,8 @@ import { Navigate, NavLink, Route, Routes } from "react-router";
 import { api, ApiError } from "../../api/client";
 import type { Me, User } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
-import { IconInbox, IconLogout, IconQueue, IconSettings, IconTv, IconUsers } from "../../components/Icons";
+import { Inbox, ListMusic, LogOut, Settings, Tv, Users } from "lucide-react";
+import { Toaster } from "../../components/Toaster";
 import { RequestsTab } from "./RequestsTab";
 import { QueueTab } from "./QueueTab";
 import { UsersTab } from "./UsersTab";
@@ -13,10 +14,10 @@ import "../../styles/admin.css";
 type Section = { path: string; label: string; icon: ReactNode; allowed: (u: User) => boolean };
 
 const SECTIONS: Section[] = [
-  { path: "requests", label: "Requests", icon: <IconInbox size={20} />, allowed: (u) => u.can_approve },
-  { path: "queue", label: "Queue", icon: <IconQueue size={20} />, allowed: (u) => u.can_manage_queue },
-  { path: "users", label: "People", icon: <IconUsers size={20} />, allowed: (u) => u.is_admin },
-  { path: "settings", label: "Settings", icon: <IconSettings size={20} />, allowed: (u) => u.is_admin },
+  { path: "requests", label: "Requests", icon: <Inbox size={20} />, allowed: (u) => u.can_approve },
+  { path: "queue", label: "Queue", icon: <ListMusic size={20} />, allowed: (u) => u.can_manage_queue },
+  { path: "users", label: "People", icon: <Users size={20} />, allowed: (u) => u.is_admin },
+  { path: "settings", label: "Settings", icon: <Settings size={20} />, allowed: (u) => u.is_admin },
 ];
 
 export default function AdminApp() {
@@ -115,7 +116,7 @@ export default function AdminApp() {
             </NavLink>
           ))}
           <a className="admin__link" href="/" target="_blank" rel="noreferrer">
-            <IconTv size={20} />
+            <Tv size={20} />
             <span>TV view</span>
           </a>
         </nav>
@@ -130,7 +131,7 @@ export default function AdminApp() {
             <div className="muted truncate">{user.email ?? ""}</div>
           </div>
           <button className="icon-btn" onClick={signOut} aria-label="Sign out" title="Sign out">
-            <IconLogout size={20} />
+            <LogOut size={20} />
           </button>
         </div>
       </aside>
@@ -144,6 +145,7 @@ export default function AdminApp() {
           {user.is_admin && <Route path="settings" element={<SettingsTab />} />}
           <Route path="*" element={<Navigate to={`/admin/${allowed[0].path}`} replace />} />
         </Routes>
+        <Toaster />
       </main>
     </div>
   );

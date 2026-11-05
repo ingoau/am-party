@@ -2,16 +2,15 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import { api } from "../../api/client";
 import type { AdminStatus, AppleMusicStatus, CrossfadeMode, Playlist, Settings } from "../../api/types";
 import { Artwork } from "../../components/Artwork";
-import { IconCheck } from "../../components/Icons";
+import { Check, Music } from "lucide-react";
 import { cx, fmtDate } from "../../util";
-import { PageHeader, useFlash } from "./common";
+import { PageHeader, flash } from "./common";
 
 export function SettingsTab() {
   const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<AdminStatus | null>(null);
-  const flash = useFlash();
 
   const loadStatus = useCallback(() => {
     api.status().then(setStatus).catch(() => setStatus(null));
@@ -184,7 +183,6 @@ export function SettingsTab() {
 
       <AppleMusicCard onChange={loadStatus} />
       <StatusCard status={status} />
-      {flash.node}
     </div>
   );
 }
@@ -264,7 +262,7 @@ function FallbackCard({ draft, set }: { draft: Settings; set: <K extends keyof S
                   <span className="pl__name">{p.name}</span>
                   {sel && (
                     <span className="pl__check">
-                      <IconCheck size={14} />
+                      <Check size={14} />
                     </span>
                   )}
                 </button>
@@ -307,7 +305,6 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
   const [devToken, setDevToken] = useState("");
   const [userToken, setUserToken] = useState("");
   const [saving, setSaving] = useState(false);
-  const flash = useFlash();
 
   const load = useCallback(() => {
     api
@@ -352,9 +349,7 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
     <section className="card am-card">
       <div className="am-card__head">
         <div className="am-logo" aria-hidden>
-          <svg viewBox="0 0 24 24" width="22" height="22">
-            <path fill="currentColor" d="M9 18V5l11-2v13a3 3 0 1 1-2-2.83V6.4L11 7.7V18a3 3 0 1 1-2-2.83z" />
-          </svg>
+          <Music size={22} />
         </div>
         <div>
           <h2 className="card__title">Apple Music</h2>
@@ -467,7 +462,6 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
           </details>
         </>
       )}
-      {flash.node}
     </section>
   );
 }

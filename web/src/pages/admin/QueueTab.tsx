@@ -1,5 +1,18 @@
-import { useState } from "react";
-import { api } from "../../api/client";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { restrictToParentElement, restrictToVerticalAxis } from "@dnd-kit/modifiers";
+import { ArrowUpToLine, ChevronDown, ChevronUp, GripVertical, ListStart, Pause, Play, Plus, SkipForward, Trash2 } from "lucide-react";
+import { api, ApiError } from "../../api/client";
 import type { QueueItem, Track } from "../../api/types";
 import { useLive } from "../../hooks/live";
 import { useProgress } from "../../hooks/useProgress";
@@ -7,8 +20,8 @@ import { Artwork } from "../../components/Artwork";
 import { ProgressBar } from "../../components/ProgressBar";
 import { TrackRow } from "../../components/TrackRow";
 import { SourceBadge } from "../../components/SourceBadge";
-import { IconDown, IconNext, IconPause, IconPlay, IconPlus, IconSkip, IconTop, IconTrash, IconUp } from "../../components/Icons";
-import { PageHeader, useFlash } from "./common";
+import { cx } from "../../util";
+import { PageHeader, flash } from "./common";
 import { TrackSearch } from "./TrackSearch";
 
 export function QueueTab() {
@@ -16,22 +29,30 @@ export function QueueTab() {
   const np = state?.now_playing ?? null;
   const paused = state?.paused ?? false;
   const position = useProgress(np, clockOffset, paused, 500);
-  const flash = useFlash();
   const [busy, setBusy] = useState(false);
   // Local optimistic ordering while a move is in flight.
   const [optimistic, setOptimistic] = useState<QueueItem[] | null>(null);
   const upcoming = optimistic ?? state?.upcoming ?? [];
 
-  const run = async (fn: () => Promise<unknown>, okMsg?: string) => {
+  // Drop the optimistic order as soon as the server's view of the queue arrives (or after a grace period),
+  // so a successful drag doesn't visibly snap back while the refresh is in flight.
+  useEffect(() => setOptimistic(null), [state?.upcoming]);
+  useEffect(() => {
+    if (!optimistic) return;
+    const t = window.setTimeout(() => setOptimistic(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [optimistic]);
+
+  const run = async (fn: () => Promise<unknown>, okMsg?: string, onErr: (e: unknown) => void = flash.err) => {
     setBusy(true);
     try {
       await fn();
       if (okMsg) flash.ok(okMsg);
     } catch (e) {
-      flash.err(e);
+      setOptimistic(null);
+      onErr(e);
     } finally {
       setBusy(false);
-      setOptimistic(null);
       refresh();
     }
   };
@@ -39,11 +60,26 @@ export function QueueTab() {
   const move = (item: QueueItem, to: number) => {
     const from = upcoming.findIndex((u) => u.id === item.id);
     if (from < 0 || to < 0 || to >= upcoming.length || from === to) return;
-    const next = upcoming.slice();
-    next.splice(from, 1);
-    next.splice(to, 0, item);
-    setOptimistic(next);
-    void run(() => api.queueMove(item.id, to));
+    setOptimistic(arrayMove(upcoming, from, to));
+    void run(
+      () => api.queueMove(item.id, to),
+      undefined,
+      (e) =>
+        e instanceof ApiError && e.status === 409
+          ? flash.err(`“${item.track.title}” is already being mixed in, so it can't be moved right now.`)
+          : flash.err(e),
+    );
+  };
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const item = upcoming.find((u) => u.id === active.id);
+    const to = upcoming.findIndex((u) => u.id === over.id);
+    if (item && to >= 0) move(item, to);
   };
 
   const add = (t: Track, position: "next" | "end") =>
@@ -75,15 +111,15 @@ export function QueueTab() {
           <div className="np-card__controls">
             {paused ? (
               <button className="btn btn--primary" disabled={busy} onClick={() => run(() => api.resume())}>
-                <IconPlay size={18} /> Resume
+                <Play size={18} fill="currentColor" /> Resume
               </button>
             ) : (
               <button className="btn" disabled={busy || !np} onClick={() => run(() => api.pause())}>
-                <IconPause size={18} /> Pause
+                <Pause size={18} fill="currentColor" /> Pause
               </button>
             )}
             <button className="btn" disabled={busy || !np} onClick={() => run(() => api.skip(), "Skipped")}>
-              <IconSkip size={18} /> Skip
+              <SkipForward size={18} fill="currentColor" /> Skip
             </button>
           </div>
         </div>
@@ -106,46 +142,71 @@ export function QueueTab() {
               )}
             </div>
           ) : (
-            <ol className="list queue-list">
-              {upcoming.map((q, i) => (
-                <li key={q.id}>
-                  <TrackRow
-                    track={q.track}
-                    index={i + 1}
-                    className="card-row"
-                    meta={<SourceBadge source={q.source} />}
-                    actions={
-                      <div className="btn-group btn-group--icons">
-                        <button className="icon-btn" disabled={busy || i === 0} onClick={() => move(q, 0)} aria-label="Move to top" title="Move to top">
-                          <IconTop size={18} />
-                        </button>
-                        <button className="icon-btn" disabled={busy || i === 0} onClick={() => move(q, i - 1)} aria-label="Move up" title="Move up">
-                          <IconUp size={18} />
-                        </button>
-                        <button
-                          className="icon-btn"
-                          disabled={busy || i === upcoming.length - 1}
-                          onClick={() => move(q, i + 1)}
-                          aria-label="Move down"
-                          title="Move down"
-                        >
-                          <IconDown size={18} />
-                        </button>
-                        <button
-                          className="icon-btn icon-btn--danger"
-                          disabled={busy}
-                          onClick={() => run(() => api.queueRemove(q.id), `Removed “${q.track.title}”`)}
-                          aria-label="Remove from queue"
-                          title="Remove"
-                        >
-                          <IconTrash size={18} />
-                        </button>
-                      </div>
-                    }
-                  />
-                </li>
-              ))}
-            </ol>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+              onDragEnd={onDragEnd}
+              accessibility={{
+                screenReaderInstructions: {
+                  draggable: "To reorder, press space or enter to pick up the song, use the arrow keys to move it, then press space or enter again to drop it. Press escape to cancel.",
+                },
+                announcements: {
+                  onDragStart: ({ active }) => `Picked up ${titleOf(upcoming, active.id)}.`,
+                  onDragOver: ({ active, over }) =>
+                    over ? `${titleOf(upcoming, active.id)} is over position ${posOf(upcoming, over.id)}.` : `${titleOf(upcoming, active.id)} is no longer over the list.`,
+                  onDragEnd: ({ active, over }) =>
+                    over ? `${titleOf(upcoming, active.id)} dropped at position ${posOf(upcoming, over.id)}.` : `${titleOf(upcoming, active.id)} dropped.`,
+                  onDragCancel: ({ active }) => `Reordering cancelled. ${titleOf(upcoming, active.id)} was not moved.`,
+                },
+              }}
+            >
+              <SortableContext items={upcoming.map((q) => q.id)} strategy={verticalListSortingStrategy}>
+                <ol className="list queue-list">
+                  {upcoming.map((q, i) => (
+                    <SortableQueueRow key={q.id} item={q} disabled={busy}>
+                      {(handle) => (
+                        <TrackRow
+                          track={q.track}
+                          index={i + 1}
+                          className="card-row"
+                          lead={handle}
+                          meta={<SourceBadge source={q.source} />}
+                          actions={
+                            <div className="btn-group btn-group--icons">
+                              <button className="icon-btn" disabled={busy || i === 0} onClick={() => move(q, 0)} aria-label="Move to top" title="Move to top">
+                                <ArrowUpToLine size={18} />
+                              </button>
+                              <button className="icon-btn" disabled={busy || i === 0} onClick={() => move(q, i - 1)} aria-label="Move up" title="Move up">
+                                <ChevronUp size={18} />
+                              </button>
+                              <button
+                                className="icon-btn"
+                                disabled={busy || i === upcoming.length - 1}
+                                onClick={() => move(q, i + 1)}
+                                aria-label="Move down"
+                                title="Move down"
+                              >
+                                <ChevronDown size={18} />
+                              </button>
+                              <button
+                                className="icon-btn icon-btn--danger"
+                                disabled={busy}
+                                onClick={() => run(() => api.queueRemove(q.id), `Removed “${q.track.title}”`)}
+                                aria-label="Remove from queue"
+                                title="Remove"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </div>
+                          }
+                        />
+                      )}
+                    </SortableQueueRow>
+                  ))}
+                </ol>
+              </SortableContext>
+            </DndContext>
           )}
           {upcoming.length > 0 && state?.up_next_fallback && (
             <TrackRow track={state.up_next_fallback} dim meta={<span className="muted">then, from the fallback playlist</span>} />
@@ -158,11 +219,11 @@ export function QueueTab() {
             actions={(t) => (
               <div className="btn-group">
                 <button className="btn btn--sm" disabled={busy} onClick={() => add(t, "next")} title="Play next">
-                  <IconNext size={16} />
+                  <ListStart size={16} />
                   <span className="hide-sm">Next</span>
                 </button>
                 <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => add(t, "end")} title="Add to end of queue">
-                  <IconPlus size={16} />
+                  <Plus size={16} />
                   <span className="hide-sm">Add</span>
                 </button>
               </div>
@@ -170,7 +231,51 @@ export function QueueTab() {
           />
         </section>
       </div>
-      {flash.node}
     </div>
+  );
+}
+
+const titleOf = (items: QueueItem[], id: string | number) => {
+  const q = items.find((u) => u.id === id);
+  return q ? `“${q.track.title}”` : "Song";
+};
+const posOf = (items: QueueItem[], id: string | number) => items.findIndex((u) => u.id === id) + 1;
+
+/** A queue <li> that can be dragged by its grip handle (pointer, touch or keyboard). */
+function SortableQueueRow({
+  item,
+  disabled,
+  children,
+}: {
+  item: QueueItem;
+  disabled: boolean;
+  children: (handle: ReactNode) => ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+    id: item.id,
+    disabled,
+  });
+  const handle = (
+    <button
+      type="button"
+      ref={setActivatorNodeRef}
+      className="icon-btn drag-handle"
+      aria-label={`Reorder “${item.track.title}”`}
+      title="Drag to reorder"
+      disabled={disabled}
+      {...attributes}
+      {...listeners}
+    >
+      <GripVertical size={18} />
+    </button>
+  );
+  return (
+    <li
+      ref={setNodeRef}
+      className={cx("queue-item", isDragging && "is-dragging")}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+    >
+      {children(handle)}
+    </li>
   );
 }

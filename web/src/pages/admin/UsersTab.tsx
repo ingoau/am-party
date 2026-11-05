@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api/client";
 import type { User } from "../../api/types";
 import { useLiveEvent } from "../../hooks/live";
-import { IconTrash } from "../../components/Icons";
+import { Trash2 } from "lucide-react";
 import { initials } from "./AdminApp";
-import { PageHeader, useFlash } from "./common";
+import { PageHeader, flash } from "./common";
 
 type Perm = "can_approve" | "can_manage_queue" | "is_admin";
 const PERMS: { key: Perm; label: string; hint: string }[] = [
@@ -15,7 +15,6 @@ const PERMS: { key: Perm; label: string; hint: string }[] = [
 
 export function UsersTab({ me }: { me: User }) {
   const [users, setUsers] = useState<User[] | null>(null);
-  const flash = useFlash();
 
   const load = useCallback(() => {
     api
@@ -115,7 +114,7 @@ export function UsersTab({ me }: { me: User }) {
                       aria-label={`Remove ${u.name}`}
                       title={u.id === me.id ? "You can't remove yourself" : "Remove"}
                     >
-                      <IconTrash size={18} />
+                      <Trash2 size={18} />
                     </button>
                   </td>
                 </tr>
@@ -125,7 +124,6 @@ export function UsersTab({ me }: { me: User }) {
         </div>
       )}
       <p className="hint">New people appear here after they sign in. The first person to sign in becomes an admin.</p>
-      {flash.node}
     </div>
   );
 }

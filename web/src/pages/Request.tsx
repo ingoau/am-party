@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { api, ApiError } from "../api/client";
 import type { SongRequest, Track } from "../api/types";
@@ -10,7 +10,8 @@ import { Artwork } from "../components/Artwork";
 import { ProgressBar } from "../components/ProgressBar";
 import { TrackRow } from "../components/TrackRow";
 import { StatusBadge } from "../components/StatusBadge";
-import { IconCheck, IconSearch, IconX } from "../components/Icons";
+import { Check, Search, X } from "lucide-react";
+import { LazyToaster, lazyToast as toast } from "../components/lazyToast";
 import { artworkAt, cx, timeAgo } from "../util";
 import "../styles/request.css";
 
@@ -51,14 +52,6 @@ export function RequestPage() {
 
   const [mine, setMine] = useState<SongRequest[]>([]);
   const [pendingTrack, setPendingTrack] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const toastTimer = useRef<number | undefined>(undefined);
-
-  const showToast = (kind: "ok" | "err", text: string) => {
-    setToast({ kind, text });
-    window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 4500);
-  };
 
   useEffect(() => {
     document.title = `Request a song — ${state?.party_name || "Encore"}`;
@@ -125,9 +118,9 @@ export function RequestPage() {
     try {
       const { request } = await api.createRequest(t.id);
       setMine((m) => [request, ...m.filter((x) => x.id !== request.id)]);
-      showToast("ok", `Requested “${t.title}”. The host will review it soon.`);
+      toast.success(`Requested “${t.title}”. The host will review it soon.`, { duration: 4500 });
     } catch (e) {
-      showToast("err", friendlyError(e));
+      toast.error(friendlyError(e), { duration: 4500 });
       if (e instanceof ApiError && e.status === 409) loadMine();
     } finally {
       setPendingTrack(null);
@@ -176,7 +169,7 @@ export function RequestPage() {
       {tab === "search" && (
         <section>
           <div className="search">
-            <IconSearch size={20} className="search__icon" />
+            <Search size={20} className="search__icon" aria-hidden />
             <input
               className="search__input"
               type="search"
@@ -192,7 +185,7 @@ export function RequestPage() {
             />
             {query && (
               <button className="search__clear" type="button" aria-label="Clear search" onClick={() => setQuery("")}>
-                <IconX size={18} />
+                <X size={18} />
               </button>
             )}
           </div>
@@ -214,7 +207,7 @@ export function RequestPage() {
                         <span className="badge badge--pending">Pending</span>
                       ) : st === "approved" || queued ? (
                         <span className="badge badge--approved">
-                          <IconCheck size={14} /> {np?.id === t.id ? "Playing" : queued ? "Queued" : "Approved"}
+                          <Check size={14} /> {np?.id === t.id ? "Playing" : queued ? "Queued" : "Approved"}
                         </span>
                       ) : (
                         <button
@@ -270,11 +263,9 @@ export function RequestPage() {
         </section>
       )}
 
-      {toast && (
-        <div className={cx("toast", toast.kind === "err" && "toast--err")} role="status" onClick={() => setToast(null)}>
-          {toast.text}
-        </div>
-      )}
+      <Suspense fallback={null}>
+        <LazyToaster />
+      </Suspense>
     </div>
   );
 }

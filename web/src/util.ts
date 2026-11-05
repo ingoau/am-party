@@ -24,9 +24,8 @@ export function fmtDate(ts: number | null | undefined): string {
   });
 }
 
-export function cx(...parts: (string | false | null | undefined)[]): string {
-  return parts.filter(Boolean).join(" ");
-}
+/** Conditional className joiner (clsx). */
+export { clsx as cx } from "clsx";
 
 /** Apple artwork URLs sometimes carry {w}x{h} placeholders; also lets us request other sizes. */
 export function artworkAt(url: string | null | undefined, size: number): string | null {

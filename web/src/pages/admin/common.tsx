@@ -1,27 +1,16 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { ApiError } from "../../api/client";
 
-/** Small hook for transient feedback messages in admin views. */
-export function useFlash() {
-  const [flash, setFlash] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const t = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(t.current), []);
-  const show = (kind: "ok" | "err", text: string) => {
-    setFlash({ kind, text });
-    window.clearTimeout(t.current);
-    t.current = window.setTimeout(() => setFlash(null), kind === "err" ? 6000 : 3000);
-  };
-  const node = flash ? (
-    <div className={`toast ${flash.kind === "err" ? "toast--err" : ""}`} role="status" onClick={() => setFlash(null)}>
-      {flash.text}
-    </div>
-  ) : null;
-  return {
-    node,
-    ok: (text: string) => show("ok", text),
-    err: (e: unknown) => show("err", e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e)),
-  };
+export function errorText(e: unknown): string {
+  return e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
 }
+
+/** Transient feedback toasts for admin views (rendered by the <Toaster /> in AdminApp). */
+export const flash = {
+  ok: (text: string) => void toast.success(text, { duration: 3000 }),
+  err: (e: unknown) => void toast.error(errorText(e), { duration: 6000 }),
+};
 
 export function PageHeader({ title, sub, children }: { title: string; sub?: string; children?: ReactNode }) {
   return (

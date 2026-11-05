@@ -8,7 +8,7 @@ import { useSendspin, type SendspinStatus } from "../hooks/useSendspin";
 import { Artwork } from "../components/Artwork";
 import { ProgressBar } from "../components/ProgressBar";
 import { QrCode } from "../components/QrCode";
-import { IconExplicit, IconHeadphones, IconMute, IconSettings, IconUsers, IconVolume } from "../components/Icons";
+import { Headphones, Settings, SquareLetterE, Users, Volume2, VolumeX, WifiOff } from "lucide-react";
 import { artworkAt, cx, storage } from "../util";
 import "../styles/tv.css";
 
@@ -98,11 +98,12 @@ export function TvPage() {
         </div>
         <div className="tv__header-right">
           <span className="chip" title="Devices listening right now">
-            <IconUsers size={18} />
+            <Users size={18} />
             {state?.listeners ?? 0} listening
           </span>
           {wsStatus !== "live" && (
             <span className={cx("chip", "chip--warn")} title="Live updates">
+              <WifiOff size={18} />
               {wsStatus === "connecting" ? "Connecting…" : wsStatus === "polling" ? "Reconnecting…" : "Offline"}
             </span>
           )}
@@ -121,7 +122,7 @@ export function TvPage() {
               <div className="eyebrow">{paused ? "Paused" : "Now playing"}</div>
               <h1 className="tv__title">
                 {np.title}
-                {np.explicit && <IconExplicit size={28} className="explicit" aria-label="Explicit" />}
+                {np.explicit && <SquareLetterE size={28} className="explicit" role="img" aria-label="Explicit" />}
               </h1>
               <div className="tv__artist">{np.artist}</div>
               {np.album && <div className="tv__album">{np.album}</div>}
@@ -187,7 +188,7 @@ export function TvPage() {
                     <span />
                   </span>
                 ) : (
-                  <IconHeadphones size={26} />
+                  <Headphones size={26} />
                 )}
                 <span>{sp.status.listening ? "Listening" : "Tap to listen"}</span>
               </button>
@@ -200,7 +201,7 @@ export function TvPage() {
                     aria-label={sp.muted ? "Unmute this device" : "Mute this device"}
                     aria-pressed={sp.muted}
                   >
-                    {sp.muted || sp.volume === 0 ? <IconMute size={22} /> : <IconVolume size={22} />}
+                    {sp.muted || sp.volume === 0 ? <VolumeX size={22} /> : <Volume2 size={22} />}
                   </button>
                   <input
                     type="range"
@@ -326,7 +327,7 @@ function SettingsPopover({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <IconSettings size={22} />
+        <Settings size={22} />
       </button>
       {open && (
         <div className="popover" role="dialog" aria-label="Device settings">

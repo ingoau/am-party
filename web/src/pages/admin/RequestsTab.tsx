@@ -3,10 +3,10 @@ import { api } from "../../api/client";
 import type { SongRequest } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { TrackRow } from "../../components/TrackRow";
-import { IconCheck, IconNext, IconX } from "../../components/Icons";
+import { Check, ListStart, X } from "lucide-react";
 import { StatusBadge } from "../../components/StatusBadge";
 import { cx, timeAgo } from "../../util";
-import { PageHeader, useFlash } from "./common";
+import { PageHeader, flash } from "./common";
 
 type View = "pending" | "history";
 
@@ -16,7 +16,6 @@ export function RequestsTab() {
   const [pending, setPending] = useState<SongRequest[] | null>(null);
   const [history, setHistory] = useState<SongRequest[] | null>(null);
   const [busy, setBusy] = useState<Set<number>>(new Set());
-  const flash = useFlash();
 
   const load = useCallback(() => {
     api
@@ -108,7 +107,7 @@ export function RequestsTab() {
                       onClick={() => act(r, () => api.approve(r.id, "end"), `Queued “${r.track.title}”`)}
                       title="Approve — add to the end of the queue"
                     >
-                      <IconCheck size={16} /> Approve
+                      <Check size={16} /> Approve
                     </button>
                     <button
                       className="btn btn--sm"
@@ -116,7 +115,7 @@ export function RequestsTab() {
                       onClick={() => act(r, () => api.approve(r.id, "next"), `“${r.track.title}” plays next`)}
                       title="Approve and play next"
                     >
-                      <IconNext size={16} /> Play next
+                      <ListStart size={16} /> Play next
                     </button>
                     <button
                       className="btn btn--danger-ghost btn--sm"
@@ -125,7 +124,7 @@ export function RequestsTab() {
                       aria-label="Reject"
                       title="Reject"
                     >
-                      <IconX size={16} />
+                      <X size={16} />
                       <span className="hide-sm">Reject</span>
                     </button>
                   </div>
@@ -137,7 +136,6 @@ export function RequestsTab() {
           ))}
         </div>
       )}
-      {flash.node}
     </div>
   );
 }
