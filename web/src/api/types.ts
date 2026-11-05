@@ -33,6 +33,7 @@ export type State = {
   paused: boolean;
   requests_open: boolean;
   listeners: number;
+  public_url?: string; // configured public base URL, used for the QR code
 };
 
 export type RequestStatus = "pending" | "approved" | "rejected";

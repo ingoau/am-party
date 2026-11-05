@@ -74,6 +74,7 @@ class Party:
         self._guest_last_request: dict[str, float] = {}
         self._guest_searches: dict[str, deque[float]] = {}
         self.apple_error: str | None = None
+        self.public_url = ""
         self._fallback_lock = asyncio.Lock()
 
     # -- lifecycle --------------------------------------------------------------
@@ -276,6 +277,7 @@ class Party:
             "paused": bool(eng and eng.paused),
             "requests_open": bool(self._settings.get("requests_open", True)),
             "listeners": self.listeners,
+            "public_url": self.public_url,
         }
 
     def set_listeners(self, n: int) -> None:

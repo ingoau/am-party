@@ -37,6 +37,7 @@ type State = {
   paused: boolean;
   requests_open: boolean;
   listeners: number;            // connected sendspin players
+  public_url: string;           // configured public base URL (QR code target)
 };
 
 type Request = {

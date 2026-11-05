@@ -56,6 +56,7 @@ class Encore:
             logger=logging.getLogger("encore.apple_music"),
         )
         self.party = Party(self.db, self.apple, self.hub)
+        self.party.public_url = self.config.public_url
         await self.party.load()
 
         build_transition = None

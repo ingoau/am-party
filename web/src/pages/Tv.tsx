@@ -28,7 +28,7 @@ export function TvPage() {
     () => params.get("display") === "1" || storage.get(K_DISPLAY_ONLY) === "1",
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const requestUrl = `${location.origin}/request`;
+  const requestUrl = `${state?.public_url || location.origin}/request`;
 
   const setDisplayOnly = (v: boolean) => {
     setDisplayOnlyState(v);
