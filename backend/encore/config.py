@@ -92,7 +92,8 @@ def load_config() -> Config:
         apple_music_user_token=_read_secret("APPLE_MUSIC_USER_TOKEN")
         or _file_if_exists(secrets_dir / "apple_music_user_token"),
         apple_music_storefront=_env("APPLE_MUSIC_STOREFRONT"),
-        apple_music_developer_token=_read_secret("APPLE_MUSIC_DEVELOPER_TOKEN"),
+        apple_music_developer_token=_read_secret("APPLE_MUSIC_DEVELOPER_TOKEN")
+        or _file_if_exists(secrets_dir / "apple_music_developer_token"),
         widevine_private_key_path=_secret_path("WIDEVINE_PRIVATE_KEY", "private_key.pem"),
         widevine_client_id_path=_secret_path("WIDEVINE_CLIENT_ID", "client_id.bin"),
         dev_mode=_env("ENCORE_DEV", "0") == "1",

@@ -61,6 +61,19 @@ CREATE TABLE IF NOT EXISTS history (
     played_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS credentials (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS analysis (
+    track_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -140,6 +153,24 @@ class Database:
             )
         await self.c.commit()
         return await self.get_settings()
+
+
+    # credentials ------------------------------------------------------------
+    async def get_credential(self, key: str) -> tuple[str, float] | None:
+        row = await self.fetchone("SELECT value, updated_at FROM credentials WHERE key=?", key)
+        return (row["value"], row["updated_at"]) if row else None
+
+    async def set_credential(self, key: str, value: str | None) -> None:
+        if value:
+            await self.execute(
+                "INSERT INTO credentials(key, value, updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                key,
+                value,
+                now(),
+            )
+        else:
+            await self.execute("DELETE FROM credentials WHERE key=?", key)
 
 
 def now() -> float:

@@ -117,3 +117,14 @@ type Settings = {
   request_cooldown_seconds: number;
 };
 ```
+
+### Apple Music connection (admin)
+
+Tokens can come from env/secret files (take precedence) or be set from the UI (stored in the DB).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/admin/apple-music` | `{configured, ok, error, storefront, developer_token_source: "env"\|"db"\|null, developer_token_expires_at: number\|null, user_token_source: "env"\|"db"\|null, user_token_set_at: number\|null, widevine: boolean}` |
+| PUT | `/api/admin/apple-music` | `{developer_token?: string, user_token?: string}` (manual entry; empty string clears the DB value) → same as GET |
+| GET | `/admin/apple-music/connect` | **Full page** (not SPA): Apple MusicKit sign-in. On success it POSTs to the callback below and returns to `/admin/settings`. The settings UI should show a "Connect Apple Music" button linking here (disabled with hint if no developer token). |
+| POST | `/api/admin/apple-music/user-token` | `{music_user_token, music_user_token_timestamp?}` — used by the connect page |
