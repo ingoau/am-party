@@ -278,6 +278,7 @@ class Party:
             "up_next_fallback": fb,
             "paused": bool(eng and eng.paused),
             "requests_open": bool(self._settings.get("requests_open", True)),
+            "require_approval": bool(self._settings.get("require_approval", True)),
             "listeners": self.listeners,
             "public_url": self.public_url,
         }
@@ -377,14 +378,19 @@ class Party:
             wait = int(cooldown - (time.time() - last)) + 1
             raise ApiError(429, f"Please wait {wait}s before requesting another song")
         self._guest_last_request[guest_id] = time.time()
+        auto = not s.get("require_approval", True)
         rid = await self.db.execute(
-            "INSERT INTO requests(track_id, track, guest_id, status, created_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO requests(track_id, track, guest_id, status, created_at, decided_at) "
+            "VALUES(?,?,?,?,?,?)",
             track.id,
             json.dumps(track.to_dict()),
             guest_id,
-            "pending",
+            "approved" if auto else "pending",
             now(),
+            now() if auto else None,
         )
+        if auto:
+            await self._insert_queue(track, "request", "end", request_id=rid)
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)
         assert row
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
@@ -409,6 +415,33 @@ class Party:
         sql += f" ORDER BY r.id {order} LIMIT 200"
         rows = await self.db.fetchall(sql, *args)
         return [self._request_out(r, admin=True) for r in rows]
+
+    async def approve_all(self, user: User | None, position: str = "end") -> int:
+        """Approve every pending request, oldest first."""
+        rows = await self.db.fetchall("SELECT * FROM requests WHERE status='pending' ORDER BY id")
+        if position == "next":
+            rows.reverse()  # inserting each at "next" keeps oldest first
+        for row in rows:
+            await self.db.execute(
+                "UPDATE requests SET status='approved', decided_by=?, decided_at=? WHERE id=?",
+                user.id if user else None,
+                now(),
+                row["id"],
+            )
+            track = Track.from_dict(json.loads(row["track"]))
+            if not any(q["track"].id == track.id for q in self.queue):
+                await self._insert_queue(track, "request", position, request_id=row["id"], user=user)
+        if rows:
+            await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
+        return len(rows)
+
+    async def set_require_approval(self, enabled: bool, user: User | None) -> int:
+        """Turn approval on/off. Turning it off approves everything waiting."""
+        self._settings = await self.db.set_settings({"require_approval": bool(enabled)})
+        approved = 0 if enabled else await self.approve_all(user)
+        self.changed()
+        await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
+        return approved
 
     async def decide_request(self, rid: int, user: User, approve: bool, position: str = "end") -> dict[str, Any]:
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)
@@ -524,13 +557,16 @@ class Party:
                 val = max(1, min(15, int(val)))
             elif key in ("max_pending_per_guest", "request_cooldown_seconds"):
                 val = max(0, min(3600, int(val)))
-            elif key in ("requests_open", "fallback_shuffle"):
+            elif key in ("requests_open", "fallback_shuffle", "require_approval"):
                 val = bool(val)
             elif key == "party_name":
                 val = str(val).strip()[:60] or "Encore"
             elif key in ("fallback_playlist_id", "fallback_playlist_name"):
                 val = (str(val).strip() or None) if val else None
             clean[key] = val
+        if clean.get("require_approval") is False and self._settings.get("require_approval", True):
+            clean.pop("require_approval")
+            await self.set_require_approval(False, None)
         old_pl = self._settings.get("fallback_playlist_id")
         old_shuffle = self._settings.get("fallback_shuffle")
         self._settings = await self.db.set_settings(clean)

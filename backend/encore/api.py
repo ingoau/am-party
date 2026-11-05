@@ -186,6 +186,28 @@ async def admin_requests(request: web.Request) -> web.Response:
     return web.json_response({"requests": await enc(request).party.list_requests(status)})
 
 
+@routes.post("/api/admin/requests/approve-all")
+async def approve_all(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await enc(request).auth.require(request, "approve_requests")
+    data = await body(request) if request.can_read_body else {}
+    position = "next" if data.get("position") == "next" else "end"
+    n = await enc(request).party.approve_all(user, position)
+    return web.json_response({"ok": True, "approved": n})
+
+
+@routes.post("/api/admin/requests/require-approval")
+async def require_approval(request: web.Request) -> web.Response:
+    """Approvers can switch approval off (auto-approve) and back on."""
+    csrf_check(request)
+    user = await enc(request).auth.require(request, "approve_requests")
+    data = await body(request)
+    if not isinstance(data.get("enabled"), bool):
+        raise ApiError(400, "enabled must be true or false")
+    n = await enc(request).party.set_require_approval(data["enabled"], user)
+    return web.json_response({"ok": True, "require_approval": data["enabled"], "approved": n})
+
+
 @routes.post("/api/admin/requests/{id}/approve")
 async def approve(request: web.Request) -> web.Response:
     csrf_check(request)

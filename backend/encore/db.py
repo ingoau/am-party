@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "requests_open": True,
+    "require_approval": True,
     "fallback_playlist_id": None,
     "fallback_playlist_name": None,
     "fallback_shuffle": True,

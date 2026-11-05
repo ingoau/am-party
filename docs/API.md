@@ -36,6 +36,7 @@ type State = {
   up_next_fallback: Track | null; // what plays next if the queue is empty
   paused: boolean;
   requests_open: boolean;
+  require_approval: boolean;    // false = guest requests go straight into the queue
   listeners: number;            // connected sendspin players
   public_url: string;           // configured public base URL (QR code target)
 };
@@ -90,6 +91,8 @@ Each endpoint needs the permission shown (admins have all). 401 if signed out, 4
 | GET | `/api/admin/requests?status=pending` | `{requests: Request[]}` (status optional: pending/approved/rejected/all, newest first, max 200) |
 | POST | `/api/admin/requests/{id}/approve` | body `{position?: "next" \| "end"}` (default end) |
 | POST | `/api/admin/requests/{id}/reject` | |
+| POST | `/api/admin/requests/approve-all` | body `{position?: "next" \| "end"}` → `{ok, approved: n}`; oldest first |
+| POST | `/api/admin/requests/require-approval` | `{enabled: boolean}` → `{ok, require_approval, approved}`; disabling auto-approves everything pending and all future requests (`decided_by` null = auto-approved) |
 
 ### Queue and playback
 
@@ -121,6 +124,7 @@ Each endpoint needs the permission shown (admins have all). 401 if signed out, 4
 type Settings = {
   party_name: string;
   requests_open: boolean;
+  require_approval: boolean;
   fallback_playlist_id: string | null;
   fallback_playlist_name: string | null;
   fallback_shuffle: boolean;
