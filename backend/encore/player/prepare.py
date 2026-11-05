@@ -69,7 +69,9 @@ class TrackPreparer:
         load_analysis: AnalysisLoader,
         save_analysis: AnalysisSaver,
         want_analysis: Callable[[], bool],
+        normalize: bool = True,
     ) -> None:
+        self.normalize = normalize
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         for stale in self.cache_dir.glob("*.f32*"):
@@ -184,6 +186,8 @@ class TrackPreparer:
             if item.size < BYTES_PER_SECOND:
                 raise RuntimeError("decoded audio is too short")
             item.loudness, item.gain = _gain_from_ebur128(stderr)
+            if not self.normalize:
+                item.gain = 1.0
             LOGGER.info(
                 "Prepared %s - %s (%.0fs, %.1f LUFS, gain %.2f) in %.1fs",
                 item.track.artist,

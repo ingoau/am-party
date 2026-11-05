@@ -113,16 +113,27 @@ class Party:
         return self._settings
 
     # -- engine hooks -----------------------------------------------------------
+    def _inflight(self) -> tuple[set[int], set[str]]:
+        infl = self.engine.inflight if self.engine else []
+        return (
+            {c.queue_item_id for c in infl if c.queue_item_id is not None},
+            {c.track.id for c in infl},
+        )
+
+    def _available_queue(self) -> list[dict[str, Any]]:
+        ids, _ = self._inflight()
+        return [q for q in self.queue if q["id"] not in ids]
+
     def peek_next(self) -> Candidate | None:
-        if self.queue:
-            q = self.queue[0]
+        if avail := self._available_queue():
+            q = avail[0]
             return Candidate(q["track"], q["id"], q["source"])
         if t := self._peek_fallback():
             return Candidate(t, None, "fallback")
         return None
 
     def peek_upcoming(self, n: int) -> list[Candidate]:
-        out = [Candidate(q["track"], q["id"], q["source"]) for q in self.queue[:n]]
+        out = [Candidate(q["track"], q["id"], q["source"]) for q in self._available_queue()[:n]]
         if len(out) < n and (t := self._peek_fallback()):
             out.append(Candidate(t, None, "fallback"))
         return out
@@ -189,7 +200,7 @@ class Party:
         n = len(self.fallback_order)
         if not n:
             return None
-        queued = {q["track"].id for q in self.queue}
+        queued = {q["track"].id for q in self.queue} | self._inflight()[1]
         current = self.engine.now.candidate.track.id if self.engine and self.engine.now else None
         recent = set(self.recent_ids) if n > len(self.recent_ids) + 1 else set()
         for i in range(n):

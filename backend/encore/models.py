@@ -67,11 +67,13 @@ class StreamInfo:
     headers: dict[str, str] = field(default_factory=dict)
 
     def ffmpeg_input_args(self) -> list[str]:
-        args: list[str] = [
-            "-reconnect", "1",
-            "-reconnect_delay_max", "10",
-            "-reconnect_on_http_error", "5xx,429",
-        ]
+        args: list[str] = []
+        if self.url.startswith(("http://", "https://")):
+            args += [
+                "-reconnect", "1",
+                "-reconnect_delay_max", "10",
+                "-reconnect_on_http_error", "5xx,429",
+            ]
         if self.decryption_key:
             args += ["-decryption_key", self.decryption_key]
         if self.headers:

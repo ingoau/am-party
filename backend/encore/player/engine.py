@@ -101,6 +101,9 @@ class Engine:
         self._task: asyncio.Task | None = None
         self._prefetch_task: asyncio.Task | None = None
         self._handover_handles: list[asyncio.TimerHandle] = []
+        # candidates already written to the output whose handover hasn't fired yet;
+        # the party must not offer these again
+        self.inflight: list[Candidate] = []
 
     # -- public control ------------------------------------------------------
     async def start(self) -> None:
@@ -147,10 +150,14 @@ class Engine:
         keep: set[str] = set()
         if self.now:
             keep.add(self.now.prepared.track.id)
+        for c in self.inflight:
+            keep.add(c.track.id)
         wanted: list[Candidate] = []
         if self.locked:
             wanted.append(self.locked)
         wanted += self.hooks.peek_upcoming(2)
+        if self.locked:
+            keep.add(self.locked.track.id)
         for cand in wanted[:2]:
             keep.add(cand.track.id)
         self.preparer.retain_only(keep)
@@ -194,8 +201,18 @@ class Engine:
     async def _set_idle(self) -> None:
         if self.now is not None:
             self.now = None
-            self._cancel_handovers()
             await self.hooks.on_engine_state()
+
+    async def _drain_and_idle(self, started_at: float | None, item: PreparedTrack) -> None:
+        """Stream ran out of tracks: let the last one finish audibly, then go idle."""
+        await self.output.end_stream(drain=True)
+        self.locked = None
+        if started_at is not None:
+            remaining = started_at + item.duration - time.time()
+            if remaining > 0:
+                await self._wait_wake(min(remaining, 15))
+        if not self.inflight:
+            await self._set_idle()
 
     async def _ensure_decoded(self, cand: Candidate, timeout: float = SKIP_WAIT_DECODE) -> PreparedTrack | None:
         item = self.preparer.prepare(cand.track)
@@ -274,7 +291,7 @@ class Engine:
                         build.cancel()
                     await self._interrupt(cand, item)
                     return
-                if build is None and nxt is None and pos >= lock_at:
+                if build is None and nxt is None and started_at is not None and pos >= lock_at:
                     nxt = self._lock_next()
                     if nxt and tail_len:
                         build = asyncio.create_task(
@@ -313,9 +330,7 @@ class Engine:
                 if nxt is None:
                     nxt = self._lock_next()
                 if nxt is None:
-                    await self.output.end_stream(drain=True)
-                    self.locked = None
-                    await self._set_idle()
+                    await self._drain_and_idle(started_at, item)
                     return
                 nitem = await self._ensure_decoded(nxt)
                 if nitem is None:
@@ -323,8 +338,7 @@ class Engine:
                     # try whatever is next now
                     nxt = self._lock_next()
                     if nxt is None or (nitem := await self._ensure_decoded(nxt)) is None:
-                        await self.output.end_stream(drain=True)
-                        await self._set_idle()
+                        await self._drain_and_idle(started_at, item)
                         return
                 self.last_transition = "gapless"
                 cand, item, pos, started_at = nxt, nitem, 0, None
@@ -392,6 +406,7 @@ class Engine:
     ) -> None:
         loop = asyncio.get_running_loop()
         delay = max(0.0, at - time.time())
+        self.inflight.append(cand)
         handle = loop.call_later(
             delay, lambda: asyncio.create_task(self._handover(cand, item, started_at))
         )
@@ -401,9 +416,11 @@ class Engine:
         for h in self._handover_handles:
             h.cancel()
         self._handover_handles.clear()
+        self.inflight.clear()
 
     async def _handover(self, cand: Candidate, item: PreparedTrack, started_at: float) -> None:
         is_new = not (self.now and self.now.candidate is cand)
+        self.inflight = [c for c in self.inflight if c is not cand]
         if self.locked is cand:
             self.locked = None
         if is_new:
