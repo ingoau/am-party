@@ -1,0 +1,16 @@
+# Dependencies for encore/player/sendspin_out.py (Sendspin multi-room output).
+# Direct requirements (exact pins, verified in python:3.14-slim-trixie):
+aiosendspin[server]==10.3.0
+av==19.0.2
+numpy==2.5.4
+pillow==13.0.0
+aiohttp==3.14.5
+# Transitive pins from the verified environment (pip freeze):
+cffi==2.1.1
+cpace==0.1.0
+cryptography==50.0.2
+ifaddr==0.2.0
+mashumaro==3.23
+noiseprotocol==0.3.1
+orjson==3.13.0
+zeroconf==0.153.0
