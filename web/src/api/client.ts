@@ -73,6 +73,10 @@ export const api = {
   approve: (id: number, position: "next" | "end" = "end") =>
     request<unknown>("POST", `/api/admin/requests/${id}/approve`, { position }),
   reject: (id: number) => request<unknown>("POST", `/api/admin/requests/${id}/reject`, {}),
+  approveAll: (position: "next" | "end" = "end") =>
+    request<{ ok: boolean; approved: number }>("POST", "/api/admin/requests/approve-all", { position }),
+  setRequireApproval: (enabled: boolean) =>
+    request<{ ok: boolean; require_approval: boolean; approved: number }>("POST", "/api/admin/requests/require-approval", { enabled }),
 
   // Queue managers
   adminSearch: (q: string, signal?: AbortSignal) =>

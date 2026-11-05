@@ -5,6 +5,7 @@ import { Artwork } from "../../components/Artwork";
 import { Check, Music } from "lucide-react";
 import { cx, fmtDate } from "../../util";
 import { PageHeader, flash } from "./common";
+import { RequireApprovalSwitch } from "./RequireApprovalSwitch";
 
 export function SettingsTab() {
   const [saved, setSaved] = useState<Settings | null>(null);
@@ -34,6 +35,8 @@ export function SettingsTab() {
     if (!saved || !draft) return {};
     const p: Partial<Settings> = {};
     (Object.keys(draft) as (keyof Settings)[]).forEach((k) => {
+      // require_approval applies immediately via its own endpoint (see RequireApprovalSwitch).
+      if (k === "require_approval") return;
       if (draft[k] !== saved[k]) (p as Record<string, unknown>)[k] = draft[k];
     });
     return p;
@@ -82,6 +85,7 @@ export function SettingsTab() {
                 <small>Guests can search and request songs.</small>
               </span>
             </label>
+            <RequireApprovalSwitch />
           </section>
 
           <FallbackCard draft={draft} set={set} />

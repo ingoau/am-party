@@ -8,6 +8,7 @@
 // /auth/login signs you in as a mock admin (cookie), /auth/logout signs out.
 // MOCK_USER=none|noperm|admin|dj|approver|skipper sets what /auth/login gives you (default admin).
 // /auth/login?as=<user id> signs in as any mock user (handy for testing permission gating).
+// MOCK_NOW_PLAYING=<catalog index> picks the starting track (16 = very long title/artist, 17 = "Dai Dai").
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -42,6 +43,8 @@ const SONGS = [
   ["Mr. Brightside", "The Killers", "Hot Fuss", 222],
   ["A Really Long Song Title That Goes On and On (Extended Club Remix)", "Somebody & The Featured Artists Collective", "An Album With A Very Long Name Indeed", 431],
   ["September", "Earth, Wind & Fire", "The Best of Earth, Wind & Fire", 215],
+  ["Titanium (feat. Sia) [David Guetta & MORTEN Future Rave Remix]", "Daft Punk, Pharrell Williams & Nile Rodgers", "Titanium (feat. Sia) [David Guetta & MORTEN Future Rave Remix] - Single", 246],
+  ["Dai Dai", "Shakira & Burna Boy", "Dai Dai - Single", 198],
 ];
 const TRACKS = SONGS.map(([title, artist, album, duration], i) => ({
   id: String(1400000000 + i),
@@ -68,6 +71,7 @@ let nextId = 1;
 const settings = {
   party_name: "Sam's Birthday Bash",
   requests_open: true,
+  require_approval: true,
   fallback_playlist_id: "p.mock1",
   fallback_playlist_name: "Party Classics",
   fallback_shuffle: true,
@@ -76,7 +80,7 @@ const settings = {
   max_pending_per_guest: 3,
   request_cooldown_seconds: 30,
 };
-let nowPlaying = { track: TRACKS[3], queue_item_id: null, source: "fallback", started_at: now() - 61 };
+let nowPlaying = { track: TRACKS[Number(process.env.MOCK_NOW_PLAYING ?? 3) % TRACKS.length], queue_item_id: null, source: "fallback", started_at: now() - 61 };
 let paused = false;
 let pausedAt = 0;
 let upcoming = [
@@ -88,6 +92,11 @@ let fallbackIdx = 7;
 const requests = [
   { id: nextId++, track: TRACKS[6], status: "pending", created_at: now() - 120, decided_at: null, decided_by: null, guest_label: "Guest 7F3A", guest: "x" },
   { id: nextId++, track: TRACKS[12], status: "pending", created_at: now() - 40, decided_at: null, decided_by: null, guest_label: "Guest 21C9", guest: "y" },
+  { id: nextId++, track: TRACKS[0], status: "pending", created_at: now() - 95, decided_at: null, decided_by: null, guest_label: "Guest 5D10", guest: "w" },
+  { id: nextId++, track: TRACKS[7], status: "pending", created_at: now() - 75, decided_at: null, decided_by: null, guest_label: "Guest 9AC4", guest: "v" },
+  { id: nextId++, track: TRACKS[16], status: "pending", created_at: now() - 60, decided_at: null, decided_by: null, guest_label: "Guest 3E77", guest: "u" },
+  { id: nextId++, track: TRACKS[11], status: "pending", created_at: now() - 20, decided_at: null, decided_by: null, guest_label: "Guest 7F3A", guest: "x" },
+  { id: nextId++, track: TRACKS[15], status: "approved", created_at: now() - 1500, decided_at: now() - 1500, decided_by: null, guest_label: "Guest 44B0", guest: "t" },
   { id: nextId++, track: TRACKS[5], status: "approved", created_at: now() - 900, decided_at: now() - 860, decided_by: "Sam Host", guest_label: "Guest 7F3A", guest: "x" },
   { id: nextId++, track: TRACKS[1], status: "rejected", created_at: now() - 1200, decided_at: now() - 1100, decided_by: "Sam Host", guest_label: "Guest 0B12", guest: "z" },
 ];
@@ -139,6 +148,7 @@ function state() {
     up_next_fallback: TRACKS[fallbackIdx % TRACKS.length],
     paused,
     requests_open: settings.requests_open,
+    require_approval: settings.require_approval,
     listeners: 4,
   };
 }
@@ -177,6 +187,24 @@ function broadcast(obj, filter = () => true) {
 const broadcastState = () => broadcast({ type: "state", data: state() });
 const sockUser = (s) => users.find((u) => u.id === s.uid) || null;
 const requestsChanged = () => broadcast({ type: "requests_changed" }, (s) => hasPerm(sockUser(s), "approve_requests"));
+/** Approve a pending request into the queue. `by` null = auto-approved. */
+function approveRequest(r, by, position = "end") {
+  r.status = "approved";
+  r.decided_at = now();
+  r.decided_by = by;
+  const item = { id: nextId++, track: r.track, source: "request" };
+  position === "next" ? upcoming.unshift(item) : upcoming.push(item);
+}
+/** Approve every pending request, oldest first (so "next" keeps their relative order). */
+function approveAllPending(by, position = "end") {
+  const pending = requests.filter((r) => r.status === "pending").sort((a, b) => a.created_at - b.created_at);
+  (position === "next" ? [...pending].reverse() : pending).forEach((r) => approveRequest(r, by, position));
+  return pending.length;
+}
+function setRequireApproval(enabled) {
+  settings.require_approval = !!enabled;
+  return settings.require_approval ? 0 : approveAllPending(null);
+}
 const usersChanged = () => broadcast({ type: "users_changed" }, (s) => s.uid != null); // every signed-in user
 
 /** Mirrors the backend's _apply_user_changes. Returns [status, error] on failure. */
@@ -280,6 +308,10 @@ const server = http.createServer(async (req, res) => {
       return err(res, 429, `You already have ${settings.max_pending_per_guest} songs waiting for approval.`);
     const r = { id: nextId++, track: t, status: "pending", created_at: now(), decided_at: null, decided_by: null, guest_label: `Guest ${guest.slice(0, 4).toUpperCase()}`, guest };
     requests.unshift(r);
+    if (!settings.require_approval) {
+      approveRequest(r, null);
+      broadcastState();
+    }
     requestsChanged();
     return json(res, 201, { request: strip(r, false) }, guestCookie);
   }
@@ -292,19 +324,37 @@ const server = http.createServer(async (req, res) => {
     const list = requests.filter((r) => st === "all" || r.status === st).sort((a, b) => b.created_at - a.created_at);
     return json(res, 200, { requests: list.map((r) => strip(r, true)) });
   }
+  if (p === "/api/admin/requests/approve-all" && req.method === "POST") {
+    if (!need("approve_requests")) return;
+    const body = await readBody(req);
+    const n = approveAllPending(user.name, body.position === "next" ? "next" : "end");
+    if (n) {
+      broadcastState();
+      requestsChanged();
+    }
+    return json(res, 200, { ok: true, approved: n });
+  }
+  if (p === "/api/admin/requests/require-approval" && req.method === "POST") {
+    if (!need("approve_requests")) return;
+    const body = await readBody(req);
+    const approved = setRequireApproval(body.enabled);
+    broadcastState();
+    requestsChanged();
+    return json(res, 200, { ok: true, require_approval: settings.require_approval, approved });
+  }
   if ((m = p.match(/^\/api\/admin\/requests\/(\d+)\/(approve|reject)$/)) && req.method === "POST") {
     if (!need("approve_requests")) return;
     const r = requests.find((x) => x.id === Number(m[1]));
     if (!r) return err(res, 404, "Not found");
     if (r.status !== "pending") return err(res, 409, "Already decided");
     const body = await readBody(req);
-    r.status = m[2] === "approve" ? "approved" : "rejected";
-    r.decided_at = now();
-    r.decided_by = user.name;
-    if (r.status === "approved") {
-      const item = { id: nextId++, track: r.track, source: "request" };
-      body.position === "next" ? upcoming.unshift(item) : upcoming.push(item);
+    if (m[2] === "approve") {
+      approveRequest(r, user.name, body.position === "next" ? "next" : "end");
       broadcastState();
+    } else {
+      r.status = "rejected";
+      r.decided_at = now();
+      r.decided_by = user.name;
     }
     requestsChanged();
     return json(res, 200, {});
@@ -389,7 +439,12 @@ const server = http.createServer(async (req, res) => {
   if (p === "/api/admin/settings") {
     if (!need("admin")) return;
     if (req.method === "PATCH") {
-      Object.assign(settings, await readBody(req));
+      const { require_approval, ...rest } = await readBody(req);
+      Object.assign(settings, rest);
+      if (typeof require_approval === "boolean" && require_approval !== settings.require_approval) {
+        setRequireApproval(require_approval);
+        requestsChanged();
+      }
       broadcastState();
     }
     return json(res, 200, settings);

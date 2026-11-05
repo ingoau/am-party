@@ -1241,3 +1241,50 @@ input:checked + .switch--sm::after {
     --mobile-offset-bottom: calc(196px + env(safe-area-inset-bottom)) !important;
   }
 }
+
+/* ---------- Requests: approval controls ---------- */
+.approval-card {
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  margin-bottom: 18px;
+}
+.approval-card__switch.switch-row {
+  margin: 0;
+}
+.switch-row input:disabled + .switch {
+  opacity: 0.6;
+}
+.banner--info {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: -6px 0 18px;
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+}
+.banner--info svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.split-btn {
+  display: inline-flex;
+  align-items: stretch;
+}
+.split-btn .split-btn__main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-btn .split-btn__more {
+  padding: 0 10px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.22);
+}
+.badge--auto {
+  background: rgba(61, 220, 151, 0.08);
+  border: 1px dashed rgba(61, 220, 151, 0.4);
+}

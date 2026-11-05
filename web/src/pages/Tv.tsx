@@ -8,11 +8,16 @@ import { useSendspin, type SendspinStatus } from "../hooks/useSendspin";
 import { Artwork } from "../components/Artwork";
 import { ProgressBar } from "../components/ProgressBar";
 import { QrCode } from "../components/QrCode";
-import { Headphones, Settings, SquareLetterE, Users, Volume2, VolumeX, WifiOff } from "lucide-react";
+import { Headphones, Settings, SquareLetterE, Volume2, VolumeX, WifiOff } from "lucide-react";
 import { artworkAt, cx, storage } from "../util";
 import "../styles/tv.css";
 
-const K_DISPLAY_ONLY = "encore.displayOnly";
+/** How long the controls stay up after the last mouse move / touch / key press. */
+const IDLE_MS = 3000;
+/** Controls are shown for this long on first load so people know they exist. */
+const INTRO_MS = 6000;
+/** Taps on hidden controls only reveal them; they arm this long after appearing. */
+const ARM_MS = 300;
 
 export function TvPage() {
   const { state, clockOffset, status: wsStatus } = useLive();
@@ -22,32 +27,47 @@ export function TvPage() {
   const position = useProgress(np, clockOffset, paused);
   const accent = useArtworkColor(artworkAt(np?.artwork_url, 100));
   useAccentVars(accent);
-  const idle = useIdle(3500);
+  const idle = useIdle(IDLE_MS);
   const sp = useSendspin();
-  const [displayOnly, setDisplayOnlyState] = useState(
-    () => params.get("display") === "1" || storage.get(K_DISPLAY_ONLY) === "1",
-  );
+  // Wall displays: ?display=1 suppresses the listen controls (and their shortcuts) entirely.
+  const controlsOff = params.get("display") === "1";
   const [settingsOpen, setSettingsOpen] = useState(false);
   const requestUrl = `${state?.public_url || location.origin}/request`;
 
-  const setDisplayOnly = (v: boolean) => {
-    setDisplayOnlyState(v);
-    storage.set(K_DISPLAY_ONLY, v ? "1" : "0");
-    if (v) sp.stop();
-  };
+  // The old persistent "Display only" switch is gone (not listening == display only).
+  useEffect(() => {
+    storage.set("encore.displayOnly", "");
+  }, []);
+
+  const [intro, setIntro] = useState(true);
+  useEffect(() => {
+    const t = window.setTimeout(() => setIntro(false), INTRO_MS);
+    return () => window.clearTimeout(t);
+  }, []);
+  const controlsShown = !controlsOff && (!idle || intro || settingsOpen);
+  const [armed, setArmed] = useState(controlsShown);
+
+  useEffect(() => {
+    if (!controlsShown) return setArmed(false);
+    const t = window.setTimeout(() => setArmed(true), ARM_MS);
+    return () => window.clearTimeout(t);
+  }, [controlsShown]);
+
+  const lastPointer = useRef("mouse");
 
   const toggleListen = () => {
     if (sp.status.listening) sp.stop();
     else sp.start();
   };
 
-  // Remote / keyboard: Enter or Space toggles listening, M mutes, ↑/↓ volume.
-  const kb = useRef({ toggleListen, sp, displayOnly, settingsOpen });
-  kb.current = { toggleListen, sp, displayOnly, settingsOpen };
+  // Remote / keyboard (works while the controls are hidden): Enter/Space toggles listening,
+  // M mutes, ↑/↓ volume.
+  const kb = useRef({ toggleListen, sp, controlsOff, settingsOpen });
+  kb.current = { toggleListen, sp, controlsOff, settingsOpen };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { toggleListen, sp, displayOnly, settingsOpen } = kb.current;
-      if (settingsOpen || displayOnly || e.altKey || e.ctrlKey || e.metaKey) return;
+      const { toggleListen, sp, controlsOff, settingsOpen } = kb.current;
+      if (settingsOpen || controlsOff || e.altKey || e.ctrlKey || e.metaKey) return;
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
@@ -97,10 +117,6 @@ export function TvPage() {
           <span className="brand__party">{state?.party_name || "Encore"}</span>
         </div>
         <div className="tv__header-right">
-          <span className="chip" title="Devices listening right now">
-            <Users size={18} />
-            {state?.listeners ?? 0} listening
-          </span>
           {wsStatus !== "live" && (
             <span className={cx("chip", "chip--warn")} title="Live updates">
               <WifiOff size={18} />
@@ -171,66 +187,70 @@ export function TvPage() {
       </main>
 
       <footer className="tv__footer">
-        <div className="listen">
-          {!displayOnly && (
-            <>
+        {!controlsOff ? (
+          <div
+            className={cx("tv-controls", controlsShown && "is-shown", armed && "is-armed")}
+            onPointerDownCapture={(e) => {
+              lastPointer.current = e.pointerType;
+            }}
+            onClickCapture={(e) => {
+              // A touch on hidden controls only reveals them (useIdle handles that), so a tap
+              // on an invisible button doesn't toggle anything. Mouse and keyboard go through.
+              if (!armed && e.detail !== 0 && lastPointer.current !== "mouse") {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }}
+          >
+            <button
+              type="button"
+              className={cx("tv-btn", "tv-btn--listen", sp.status.listening && "is-on")}
+              onClick={toggleListen}
+              aria-pressed={sp.status.listening}
+              aria-label={sp.status.listening ? "Stop listening on this device" : "Listen on this device"}
+              title={sp.status.listening ? "Listening — click to stop (Enter)" : "Listen on this device (Enter)"}
+            >
+              {sp.status.listening ? (
+                <span className="eq" aria-hidden>
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              ) : (
+                <Headphones size={24} />
+              )}
+            </button>
+            {sp.status.listening && (
               <button
                 type="button"
-                className={cx("listen__toggle", sp.status.listening && "is-on")}
-                onClick={toggleListen}
-                aria-pressed={sp.status.listening}
+                className={cx("tv-btn", sp.muted && "is-muted")}
+                onClick={() => sp.setMuted(!sp.muted)}
+                aria-label={sp.muted ? "Unmute this device" : "Mute this device"}
+                aria-pressed={sp.muted}
+                title={sp.muted ? "Unmute (M)" : "Mute (M)"}
               >
-                {sp.status.listening ? (
-                  <span className="eq" aria-hidden>
-                    <span />
-                    <span />
-                    <span />
-                    <span />
-                  </span>
-                ) : (
-                  <Headphones size={26} />
-                )}
-                <span>{sp.status.listening ? "Listening" : "Tap to listen"}</span>
+                {sp.muted || sp.volume === 0 ? <VolumeX size={22} /> : <Volume2 size={22} />}
               </button>
-              {sp.status.listening && (
-                <div className="listen__volume">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={() => sp.setMuted(!sp.muted)}
-                    aria-label={sp.muted ? "Unmute this device" : "Mute this device"}
-                    aria-pressed={sp.muted}
-                  >
-                    {sp.muted || sp.volume === 0 ? <VolumeX size={22} /> : <Volume2 size={22} />}
-                  </button>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={sp.muted ? 0 : sp.volume}
-                    onChange={(e) => sp.setVolume(Number(e.target.value))}
-                    aria-label="Volume on this device"
-                    className="range"
-                    style={{ ["--val" as string]: `${sp.muted ? 0 : sp.volume}%` }}
-                  />
-                </div>
-              )}
-              <SyncIndicator status={sp.status} />
-            </>
-          )}
-          <SettingsPopover
-            open={settingsOpen}
-            setOpen={setSettingsOpen}
-            deviceName={sp.deviceName}
-            setDeviceName={sp.setDeviceName}
-            displayOnly={displayOnly}
-            setDisplayOnly={setDisplayOnly}
-            syncDelay={sp.syncDelay}
-            setSyncDelay={sp.setSyncDelay}
-            status={sp.status}
-          />
-        </div>
+            )}
+            <SettingsPopover
+              open={settingsOpen}
+              setOpen={setSettingsOpen}
+              deviceName={sp.deviceName}
+              setDeviceName={sp.setDeviceName}
+              volume={sp.volume}
+              setVolume={sp.setVolume}
+              muted={sp.muted}
+              syncDelay={sp.syncDelay}
+              setSyncDelay={sp.setSyncDelay}
+              status={sp.status}
+            />
+            {!sp.status.listening && <span className="tv-controls__hint">Tap the headphones to listen here</span>}
+            <AudioAlert status={sp.status} />
+          </div>
+        ) : (
+          <span />
+        )}
 
         <Link to="/request" className="qr-card" aria-label="Request a song">
           <QrCode text={requestUrl} className="qr-card__code" label="QR code: request a song" />
@@ -244,31 +264,32 @@ export function TvPage() {
   );
 }
 
-function SyncIndicator({ status }: { status: SendspinStatus }) {
-  let label: string;
+function syncLabel(status: SendspinStatus): string {
   switch (status.sync) {
     case "off":
-      label = "Display only";
-      break;
+      return "Not listening";
     case "connecting":
-      label = "Connecting audio…";
-      break;
+      return "Connecting audio…";
     case "syncing":
-      label = "Syncing clock…";
-      break;
+      return "Syncing clock…";
     case "synced":
-      label =
-        status.syncErrorMs !== null ? `In sync · ±${Math.max(1, Math.round(Math.abs(status.syncErrorMs)))} ms` : "In sync";
-      break;
+      return status.syncErrorMs !== null
+        ? `In sync · ±${Math.max(1, Math.round(Math.abs(status.syncErrorMs)))} ms`
+        : "In sync";
     case "error":
-      label = status.error ? `Audio error: ${status.error}` : "Audio error";
-      break;
+      return status.error ? `Audio error: ${status.error}` : "Audio error";
   }
+}
+
+/** Tiny always-visible dot when this device is listening but not (yet) in sync. */
+function AudioAlert({ status }: { status: SendspinStatus }) {
+  const bad = status.sync === "error" || (status.listening && (status.sync === "connecting" || status.sync === "syncing"));
+  if (!bad) return null;
   return (
-    <div className={`sync sync--${status.sync}`} role="status" title={status.codec ?? undefined}>
+    <span className={`tv-alert sync--${status.sync}`} role="status" title={syncLabel(status)}>
       <span className="sync__dot" aria-hidden />
-      <span className="sync__label">{label}</span>
-    </div>
+      <span className="tv-alert__label">{status.sync === "error" ? "Audio error" : "Syncing…"}</span>
+    </span>
   );
 }
 
@@ -277,8 +298,9 @@ function SettingsPopover({
   setOpen,
   deviceName,
   setDeviceName,
-  displayOnly,
-  setDisplayOnly,
+  volume,
+  setVolume,
+  muted,
   syncDelay,
   setSyncDelay,
   status,
@@ -287,8 +309,9 @@ function SettingsPopover({
   setOpen: (v: boolean) => void;
   deviceName: string;
   setDeviceName: (v: string) => void;
-  displayOnly: boolean;
-  setDisplayOnly: (v: boolean) => void;
+  volume: number;
+  setVolume: (v: number) => void;
+  muted: boolean;
   syncDelay: number;
   setSyncDelay: (v: number) => void;
   status: SendspinStatus;
@@ -322,8 +345,9 @@ function SettingsPopover({
     <div className="popover-anchor" ref={ref}>
       <button
         type="button"
-        className="icon-btn"
+        className={cx("tv-btn", open && "is-on")}
         aria-label="Device settings"
+        title="Device settings"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
@@ -339,6 +363,23 @@ function SettingsPopover({
               setOpen(false);
             }}
           >
+            <div className="field">
+              <span className="field__label" id="tv-vol-label">
+                Volume on this device
+                <span className="field__value">{muted ? "Muted" : `${Math.round(volume)}%`}</span>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={muted ? 0 : volume}
+                onChange={(e) => setVolume(Number(e.target.value))}
+                aria-labelledby="tv-vol-label"
+                className="range"
+                style={{ ["--val" as string]: `${muted ? 0 : volume}%` }}
+              />
+            </div>
             <label className="field">
               <span className="field__label">This device's name</span>
               <input
@@ -346,7 +387,6 @@ function SettingsPopover({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 maxLength={60}
-                autoFocus
               />
               <span className="field__hint">Shown to the host in the list of speakers.</span>
             </label>
@@ -364,14 +404,10 @@ function SettingsPopover({
               />
               <span className="field__hint">Raise if this device's speakers (Bluetooth, soundbar) sound late vs. the others.</span>
             </label>
-            <label className="switch-row">
-              <input type="checkbox" checked={displayOnly} onChange={(e) => setDisplayOnly(e.target.checked)} />
-              <span className="switch" aria-hidden />
-              <span>
-                Display only
-                <small>Hide the listen button (for screens without speakers).</small>
-              </span>
-            </label>
+            <div className={`sync sync--${status.sync}`} role="status">
+              <span className="sync__dot" aria-hidden />
+              <span className="sync__label">{syncLabel(status)}</span>
+            </div>
             {status.listening && status.codec && <div className="field__hint">Stream: {status.codec}{status.outputLatencyMs !== null ? ` · output latency ${Math.round(status.outputLatencyMs)} ms` : ""}</div>}
             <div className="popover__actions">
               <a className="btn btn--ghost btn--sm" href="/admin">Host panel</a>

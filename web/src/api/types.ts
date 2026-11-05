@@ -32,6 +32,8 @@ export type State = {
   up_next_fallback: Track | null;
   paused: boolean;
   requests_open: boolean;
+  /** false = guest requests skip approval and go straight into the queue. */
+  require_approval: boolean;
   listeners: number;
   public_url?: string; // configured public base URL, used for the QR code
 };
@@ -115,6 +117,7 @@ export type CrossfadeMode = "smart" | "standard" | "off";
 export type Settings = {
   party_name: string;
   requests_open: boolean;
+  require_approval: boolean;
   fallback_playlist_id: string | null;
   fallback_playlist_name: string | null;
   fallback_shuffle: boolean;

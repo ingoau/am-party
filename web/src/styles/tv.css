@@ -170,16 +170,20 @@
 .tv__title {
   font-family: var(--font-display);
   font-size: clamp(2rem, 4.6vw, 6.2rem);
-  line-height: 1.02;
+  /* ≥1.15 + a little padding so descenders (g, y, p) never clip under line-clamp. */
+  line-height: 1.15;
+  padding-bottom: 0.06em;
   font-weight: 850;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.03em;
   margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   text-wrap: balance;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  flex: none;
 }
 .tv__title .explicit {
   width: 0.45em;
@@ -188,21 +192,29 @@
   vertical-align: 0.35em;
 }
 .tv__artist {
-  margin-top: clamp(8px, 1.4vh, 20px);
+  margin-top: clamp(6px, 1.1vh, 16px);
   font-size: clamp(1.15rem, 2.1vw, 2.8rem);
+  line-height: 1.25;
+  padding-bottom: 0.05em;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.86);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: break-word;
+  flex: none;
 }
 .tv__album {
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: clamp(0.95rem, 1.3vw, 1.7rem);
+  line-height: 1.35;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: none;
 }
 .tv .progress {
   margin-top: clamp(16px, 3.2vh, 48px);
@@ -219,6 +231,11 @@
 .upnext {
   margin-top: clamp(20px, 4.5vh, 64px);
   max-width: 900px;
+  /* Shrinks to the space left; rows that don't fit drop out whole (see list below). */
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .upnext__heading {
   font-size: clamp(0.75rem, 0.95vw, 1.1rem);
@@ -234,7 +251,16 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: clamp(6px, 1vh, 14px);
+  /* Rows that don't fit wrap into a second column, which is clipped, so a row is never cut in half. */
+  flex-wrap: wrap;
+  overflow: hidden;
+  min-height: 0;
+  flex: 0 1 auto;
+  row-gap: clamp(6px, 1vh, 14px);
+  column-gap: 100vw;
+}
+.upnext__list > * {
+  width: 100%;
 }
 .upnext__item {
   display: flex;
@@ -307,50 +333,86 @@
   justify-content: space-between;
   gap: 24px;
 }
-.listen {
+
+/* Compact listen controls: fade in on activity, fade out when idle. */
+.tv-controls {
+  --btn: clamp(48px, 4.4vw, 76px);
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 12px 16px;
+  gap: clamp(8px, 0.8vw, 14px);
   min-width: 0;
-  transition: opacity 0.6s;
 }
-.tv--idle .listen {
-  opacity: 0.7;
+.tv-controls > :not(.tv-alert) {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.6s var(--ease), transform 0.6s var(--ease);
 }
-.listen__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-  min-height: clamp(56px, 6.4vh, 84px);
-  padding: 0 clamp(22px, 2vw, 36px);
-  border-radius: 999px;
-  border: 2px solid rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.95);
-  color: #0b0b10;
-  font-weight: 800;
-  font-size: clamp(1.05rem, 1.25vw, 1.6rem);
-  letter-spacing: -0.01em;
-  cursor: pointer;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
-  transition: background 0.25s, color 0.25s, border-color 0.25s, transform 0.12s, box-shadow 0.25s;
+.tv-controls.is-shown > :not(.tv-alert),
+.tv-controls:has(:focus-visible) > :not(.tv-alert) {
+  opacity: 1;
+  transform: none;
+  transition-duration: 0.2s;
 }
-.listen__toggle:not(.is-on) {
-  animation: invite 2.6s ease-in-out infinite;
-}
-.listen__toggle:active {
-  transform: scale(0.97);
-}
-.listen__toggle.is-on {
-  background: rgba(var(--accent-rgb), 0.18);
-  border-color: var(--accent);
+.tv-btn {
+  display: inline-grid;
+  place-items: center;
+  width: var(--btn);
+  height: var(--btn);
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(12, 12, 18, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   color: var(--text);
-  box-shadow: 0 0 40px rgba(var(--accent-rgb), 0.35);
+  cursor: pointer;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  transition: background 0.2s, border-color 0.2s, transform 0.12s, box-shadow 0.2s;
 }
-@keyframes invite {
-  50% {
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35), 0 0 0 10px rgba(255, 255, 255, 0.1);
-  }
+.tv-btn svg {
+  width: 44%;
+  height: 44%;
+}
+.tv-btn:hover {
+  background: rgba(40, 40, 52, 0.75);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+.tv-btn:active {
+  transform: scale(0.94);
+}
+.tv-btn:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+.tv-btn.is-on {
+  background: rgba(var(--accent-rgb), 0.22);
+  border-color: var(--accent);
+  box-shadow: 0 0 30px rgba(var(--accent-rgb), 0.35);
+}
+.tv-btn--listen:not(.is-on) {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: transparent;
+  color: #0b0b10;
+}
+.tv-btn--listen:not(.is-on):hover {
+  background: #fff;
+}
+.tv-btn.is-muted {
+  color: var(--err);
+}
+.tv-btn .eq {
+  width: 40%;
+  height: 36%;
+}
+.tv-controls__hint {
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+  font-size: clamp(0.85rem, 0.95vw, 1.15rem);
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .eq {
@@ -378,39 +440,25 @@
   animation-delay: -0.15s;
 }
 
-.listen__volume {
+/* Sync status (settings popover) + tiny always-visible alert when out of sync */
+.sync {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 14px 4px 4px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--border);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-.listen__volume .range {
-  width: clamp(110px, 10vw, 200px);
-}
-
-.sync {
-  display: inline-flex;
-  align-items: center;
   gap: 8px;
-  font-size: clamp(0.8rem, 0.9vw, 1.1rem);
+  font-size: 0.85rem;
   color: var(--muted);
   font-weight: 600;
   min-width: 0;
+  margin: 0 0 14px;
 }
 .sync__label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 40ch;
 }
 .sync__dot {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--faint);
   flex: none;
@@ -422,13 +470,34 @@
 }
 .sync--synced .sync__dot {
   background: var(--ok);
-  box-shadow: 0 0 10px var(--ok);
+  box-shadow: 0 0 8px var(--ok);
 }
 .sync--error .sync__dot {
   background: var(--err);
 }
 .sync--error {
   color: #ff8a95;
+}
+.tv-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  font-size: clamp(0.72rem, 0.75vw, 0.95rem);
+  font-weight: 600;
+  color: var(--muted);
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.tv-alert.sync--error {
+  color: #ff8a95;
+}
+.field__value {
+  float: right;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .qr-card {
@@ -461,18 +530,22 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-width: 16ch;
+  min-width: 0;
 }
 .qr-card__text strong {
   font-size: clamp(1rem, 1.5vw, 2rem);
   line-height: 1.1;
   font-weight: 800;
   letter-spacing: -0.02em;
+  /* "Scan to request / a song" on two lines at any size */
+  max-width: 9.5em;
 }
 .qr-card__text span {
   color: var(--muted);
   font-size: clamp(0.75rem, 0.85vw, 1.05rem);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Popover opens upward from footer; on TV pin it to the left edge */
@@ -500,6 +573,9 @@
     width: 100%;
     max-width: 640px;
     max-height: none;
+  }
+  .upnext__list {
+    flex-wrap: nowrap;
   }
   .tv__title {
     font-size: clamp(1.7rem, 7vw, 3.4rem);
@@ -536,25 +612,18 @@
     justify-self: center;
   }
   .tv {
-    padding-bottom: calc(110px + env(safe-area-inset-bottom));
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
   }
-  /* Keep the listen controls in reach on phones. */
-  .listen {
+  /* Keep the listen controls in reach on phones (no backdrop-filter on the container:
+     it would become the containing block of the fixed popover). */
+  .tv-controls {
+    --btn: 52px;
     position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    left: 16px;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
     z-index: 30;
     justify-content: center;
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
-    /* no backdrop-filter here: it would become the containing block of the fixed popover */
-    background: linear-gradient(180deg, rgba(8, 8, 12, 0), rgba(8, 8, 12, 0.92) 35%);
-  }
-  .tv--idle .listen {
-    opacity: 1;
-  }
-  .listen__toggle {
-    min-height: 52px;
   }
   .qr-card {
     align-self: center;
@@ -572,22 +641,10 @@
     position: fixed;
     left: 16px;
     right: 16px;
-    bottom: calc(140px + env(safe-area-inset-bottom));
+    bottom: calc(84px + env(safe-area-inset-bottom));
     width: auto;
     max-width: 420px;
     margin: 0 auto;
   }
 }
 
-@media (max-width: 420px) {
-  .listen__toggle {
-    flex: 1 1 100%;
-    justify-content: center;
-  }
-  .listen__volume {
-    flex: 1;
-  }
-  .listen__volume .range {
-    width: 100%;
-  }
-}

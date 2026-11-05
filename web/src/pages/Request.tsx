@@ -118,7 +118,12 @@ export function RequestPage() {
     try {
       const { request } = await api.createRequest(t.id);
       setMine((m) => [request, ...m.filter((x) => x.id !== request.id)]);
-      toast.success(`Requested “${t.title}”. The host will review it soon.`, { duration: 4500 });
+      // Trust the server's answer first: with approval off it comes back already approved.
+      const queuedNow = request.status === "approved" || state?.require_approval === false;
+      toast.success(
+        queuedNow ? `Added “${t.title}” to the queue.` : `Requested “${t.title}”. The host will review it soon.`,
+        { duration: 4500 },
+      );
     } catch (e) {
       toast.error(friendlyError(e), { duration: 4500 });
       if (e instanceof ApiError && e.status === 409) loadMine();
@@ -226,7 +231,12 @@ export function RequestPage() {
             </div>
           )}
           {!results && !searching && !searchError && !closed && (
-            <p className="hint">Find a song and tap <strong>Request</strong>. The host approves every request before it plays.</p>
+            <p className="hint">
+              Find a song and tap <strong>Request</strong>.{" "}
+              {state?.require_approval === false
+                ? "It goes straight into the queue."
+                : "The host approves every request before it plays."}
+            </p>
           )}
         </section>
       )}
