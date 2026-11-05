@@ -1,0 +1,28 @@
+# Encore runtime requirements (python 3.14). Torch comes from the CPU wheel index.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# web / core
+aiohttp==3.14.5
+aiosqlite==0.22.1
+
+# apple music
+pywidevine==1.9.0
+
+# sendspin output
+aiosendspin[server]==10.3.0
+av==19.0.2
+pillow==13.0.0
+
+# smart fades (numpy pinned < 2.4 like Music Assistant, for older CPUs)
+numpy==2.3.5
+torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
+torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
+torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
+torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
+beat-this==1.1.0
+nnAudio==0.3.4
+kaldi-native-fbank==1.22.3
+soxr==1.1.0
+einops==0.8.2
+rotary-embedding-torch==0.9.1
+scipy==1.18.1

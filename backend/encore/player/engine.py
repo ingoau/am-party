@@ -31,6 +31,22 @@ MIN_TRANSITION = 3.0
 SKIP_WAIT_DECODE = 60.0
 
 
+def _soft_limit(pcm: bytes, knee: float = 0.9) -> bytes:
+    """Overlapping tracks in a crossfade can exceed full scale slightly.
+
+    Samples below `knee` are untouched; above it they are smoothly compressed so the
+    output never exceeds 1.0.
+    """
+    arr = np.frombuffer(pcm, dtype="<f4").astype(np.float32)
+    if not arr.size or float(np.max(np.abs(arr))) <= knee:
+        return pcm
+    mag = np.abs(arr)
+    over = mag > knee
+    head = 1.0 - knee
+    mag[over] = knee + head * np.tanh((mag[over] - knee) / head)
+    return (np.sign(arr) * mag).astype("<f4").tobytes()
+
+
 class Output(Protocol):
     async def begin_stream(self) -> None: ...
     async def write(self, pcm: bytes) -> float: ...
@@ -347,6 +363,7 @@ class Engine:
             # play rendered transition
             nitem, res = result
             self.last_transition = res.mode_used
+            res.pcm = _soft_limit(res.pcm)
             t0, interrupted = await self._write_chunks(res.pcm)
             if t0 is None:
                 t0 = time.time()

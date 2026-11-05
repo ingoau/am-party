@@ -1,0 +1,106 @@
+.req {
+  position: relative;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
+  isolation: isolate;
+}
+.req__glow {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 420px;
+  z-index: -1;
+  background:
+    radial-gradient(70% 100% at 20% 0%, rgba(var(--accent-rgb), 0.28), transparent 70%),
+    radial-gradient(60% 90% at 90% 0%, rgba(124, 92, 255, 0.22), transparent 70%);
+  pointer-events: none;
+}
+.req__header {
+  padding: 12px 4px 16px;
+}
+.req__party {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 850;
+  font-size: clamp(1.6rem, 7vw, 2.2rem);
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.req__sub {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.req-np {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  margin-bottom: 16px;
+}
+.req-np__art {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  flex: none;
+}
+.req-np__text {
+  flex: 1;
+  min-width: 0;
+}
+.req-np__text .eyebrow {
+  font-size: 0.68rem;
+}
+.req-np__title {
+  font-weight: 700;
+  margin-top: 2px;
+}
+.req-np__artist {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+
+.tabs {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  margin: 0 -16px 14px;
+  padding: 10px 16px;
+  background: rgba(11, 11, 16, 0.82);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.92rem;
+  padding: 10px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tab.is-active {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.req .track-row__actions .btn {
+  min-width: 92px;
+}
