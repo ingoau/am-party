@@ -50,9 +50,15 @@ type Request = {
   guest_label: string;          // short anonymised label e.g. "Guest 7F3A" (admin views only)
 };
 
+type Permission = "approve_requests" | "queue_add" | "queue_reorder" | "queue_remove"
+                | "playback_skip" | "playback_pause";
+
 type User = {
   id: number; email: string | null; name: string; picture: string | null;
-  is_admin: boolean; can_approve: boolean; can_manage_queue: boolean;
+  is_admin: boolean;            // admins have every permission + users/settings
+  permissions: Permission[];    // effective (all of them for admins)
+  granted: Permission[];        // explicitly granted (what the admin UI toggles)
+  created_at?: number; last_login?: number | null; // in /api/admin/users
 };
 ```
 
@@ -61,7 +67,7 @@ type User = {
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/state` | `State` |
-| GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in approvers also get `{"type":"requests_changed"}`; admins get `{"type":"users_changed"}`. Client may send `{"type":"ping"}`. |
+| GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in users with `approve_requests` also get `{"type":"requests_changed"}`; all signed-in users get `{"type":"users_changed"}` (refetch `/api/me`, admins also the user list). Client may send `{"type":"ping"}`. |
 | GET | `/api/search?q=...` | `{tracks: Track[]}`. Rate limited per guest. 503 if Apple Music not configured. |
 | POST | `/api/requests` | body `{track_id}` (must come from a recent search). `201 {request: Request}`. 429 with `{error}` when rate limited or too many pending; 409 if already queued/pending; 403 if requests closed. Sets anonymous guest cookie. |
 | GET | `/api/requests/mine` | `{requests: Request[]}` for this browser (no admin fields) |
@@ -73,7 +79,11 @@ type User = {
 
 Errors: non-2xx with `{error: string}`.
 
-## Approvers (`can_approve`)
+## Permission-gated endpoints
+
+Each endpoint needs the permission shown (admins have all). 401 if signed out, 403 if lacking it.
+
+### `approve_requests`
 
 | Method | Path | Notes |
 |---|---|---|
@@ -81,23 +91,25 @@ Errors: non-2xx with `{error: string}`.
 | POST | `/api/admin/requests/{id}/approve` | body `{position?: "next" \| "end"}` (default end) |
 | POST | `/api/admin/requests/{id}/reject` | |
 
-## Queue managers (`can_manage_queue`)
+### Queue and playback
 
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/api/admin/search?q=` | same as public search, no guest rate limit |
-| POST | `/api/admin/queue` | `{track_id, position?: "next" \| "end"}` → adds directly (no approval) |
-| DELETE | `/api/admin/queue/{id}` | |
-| POST | `/api/admin/queue/{id}/move` | `{index: number}` (0-based in `upcoming`) |
-| POST | `/api/admin/player/skip` | skip current track (quick fade to next) |
-| POST | `/api/admin/player/pause` / `/resume` | |
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| GET | `/api/admin/search?q=` | `queue_add` | same as public search, no guest rate limit |
+| POST | `/api/admin/queue` | `queue_add` | `{track_id, position?: "next" \| "end"}` → adds directly (no approval) |
+| DELETE | `/api/admin/queue/{id}` | `queue_remove` | 409 if the item is already being mixed in |
+| POST | `/api/admin/queue/{id}/move` | `queue_reorder` | `{index: number}` (0-based in `upcoming`); 409 if being mixed in |
+| POST | `/api/admin/player/skip` | `playback_skip` | skips for **every device** |
+| POST | `/api/admin/player/pause` / `/resume` | `playback_pause` | for every device |
+| GET | `/api/admin/permissions` | any signed-in | `{permissions: {id, label, description, group}[]}` catalog for the UI |
 
-## Admin (`is_admin`)
+### `admin`
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/admin/users` | `{users: User[]}` |
-| PATCH | `/api/admin/users/{id}` | `{is_admin?, can_approve?, can_manage_queue?}`; can't remove the last admin |
+| PATCH | `/api/admin/users/{id}` | `{is_admin?: boolean, permissions?: Permission[]}` (permissions replaces the granted set); can't remove the last admin |
+| POST | `/api/admin/users/bulk` | `{user_ids: number[], add?: Permission[], remove?: Permission[], set?: Permission[], is_admin?: boolean}` → `{ok, updated}` |
 | DELETE | `/api/admin/users/{id}` | |
 | GET | `/api/admin/settings` | `Settings` |
 | PATCH | `/api/admin/settings` | partial `Settings` |

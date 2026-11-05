@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
     can_approve INTEGER NOT NULL DEFAULT 0,
     can_manage_queue INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
+    permissions TEXT NOT NULL DEFAULT '[]',
     last_login REAL
 );
 
@@ -104,7 +105,23 @@ class Database:
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.execute("PRAGMA foreign_keys=ON")
         await self.conn.executescript(SCHEMA)
+        await self._migrate()
         await self.conn.commit()
+
+    async def _migrate(self) -> None:
+        cols = {r["name"] for r in await self.fetchall("PRAGMA table_info(users)")}
+        if "permissions" not in cols:
+            # v1 -> v2: individual permissions replace can_approve / can_manage_queue
+            await self.c.execute("ALTER TABLE users ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'")
+            for row in await self.fetchall("SELECT id, can_approve, can_manage_queue FROM users"):
+                perms: list[str] = []
+                if row["can_approve"]:
+                    perms += ["approve_requests"]
+                if row["can_manage_queue"]:
+                    perms += ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause"]
+                await self.c.execute(
+                    "UPDATE users SET permissions=? WHERE id=?", (json.dumps(sorted(perms)), row["id"])
+                )
 
     async def close(self) -> None:
         if self.conn:

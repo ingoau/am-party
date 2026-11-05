@@ -179,7 +179,7 @@ async def sendspin_proxy(request: web.Request) -> web.StreamResponse:
 # --------------------------------------------------------------------------- approvers
 @routes.get("/api/admin/requests")
 async def admin_requests(request: web.Request) -> web.Response:
-    await enc(request).auth.require(request, "can_approve")
+    await enc(request).auth.require(request, "approve_requests")
     status = request.query.get("status")
     if status not in (None, "pending", "approved", "rejected", "all"):
         raise ApiError(400, "Invalid status")
@@ -189,7 +189,7 @@ async def admin_requests(request: web.Request) -> web.Response:
 @routes.post("/api/admin/requests/{id}/approve")
 async def approve(request: web.Request) -> web.Response:
     csrf_check(request)
-    user = await enc(request).auth.require(request, "can_approve")
+    user = await enc(request).auth.require(request, "approve_requests")
     data = await body(request) if request.can_read_body else {}
     position = "next" if data.get("position") == "next" else "end"
     req = await enc(request).party.decide_request(int_param(request, "id"), user, True, position)
@@ -199,7 +199,7 @@ async def approve(request: web.Request) -> web.Response:
 @routes.post("/api/admin/requests/{id}/reject")
 async def reject(request: web.Request) -> web.Response:
     csrf_check(request)
-    user = await enc(request).auth.require(request, "can_approve")
+    user = await enc(request).auth.require(request, "approve_requests")
     req = await enc(request).party.decide_request(int_param(request, "id"), user, False)
     return web.json_response({"request": req})
 
@@ -207,7 +207,7 @@ async def reject(request: web.Request) -> web.Response:
 # --------------------------------------------------------------------------- queue managers
 @routes.get("/api/admin/search")
 async def admin_search(request: web.Request) -> web.Response:
-    await enc(request).auth.require(request, "can_manage_queue")
+    await enc(request).auth.require(request, "queue_add")
     tracks = await enc(request).party.search(request.query.get("q", ""))
     return web.json_response({"tracks": [t.to_dict() for t in tracks]})
 
@@ -215,7 +215,7 @@ async def admin_search(request: web.Request) -> web.Response:
 @routes.post("/api/admin/queue")
 async def queue_add(request: web.Request) -> web.Response:
     csrf_check(request)
-    user = await enc(request).auth.require(request, "can_manage_queue")
+    user = await enc(request).auth.require(request, "queue_add")
     data = await body(request)
     if not data.get("track_id"):
         raise ApiError(400, "track_id is required")
@@ -227,7 +227,7 @@ async def queue_add(request: web.Request) -> web.Response:
 @routes.delete("/api/admin/queue/{id}")
 async def queue_remove(request: web.Request) -> web.Response:
     csrf_check(request)
-    await enc(request).auth.require(request, "can_manage_queue")
+    await enc(request).auth.require(request, "queue_remove")
     await enc(request).party.remove_from_queue(int_param(request, "id"))
     return web.json_response({"ok": True})
 
@@ -235,7 +235,7 @@ async def queue_remove(request: web.Request) -> web.Response:
 @routes.post("/api/admin/queue/{id}/move")
 async def queue_move(request: web.Request) -> web.Response:
     csrf_check(request)
-    await enc(request).auth.require(request, "can_manage_queue")
+    await enc(request).auth.require(request, "queue_reorder")
     data = await body(request)
     try:
         index = int(data.get("index"))  # type: ignore[arg-type]
@@ -249,8 +249,8 @@ async def queue_move(request: web.Request) -> web.Response:
 async def player_action(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "can_manage_queue")
     action = request.match_info["action"]
+    await e.auth.require(request, "playback_skip" if action == "skip" else "playback_pause")
     if action == "skip":
         e.engine.skip()
     elif action == "pause":
@@ -264,52 +264,116 @@ async def player_action(request: web.Request) -> web.Response:
 
 
 # --------------------------------------------------------------------------- admins
+@routes.get("/api/admin/permissions")
+async def permission_catalog(request: web.Request) -> web.Response:
+    await enc(request).auth.require(request)
+    from .auth import PERMISSIONS
+
+    return web.json_response(
+        {"permissions": [{"id": k, **v} for k, v in PERMISSIONS.items()]}
+    )
+
+
 @routes.get("/api/admin/users")
 async def users(request: web.Request) -> web.Response:
     e = enc(request)
-    await e.auth.require(request, "is_admin")
+    await e.auth.require(request, "admin")
     from .auth import User
 
     rows = await e.db.fetchall("SELECT * FROM users ORDER BY id")
     out = []
     for r in rows:
         u = User.from_row(r).to_dict()
-        # report raw grants (admin implies all, but show what was granted explicitly)
-        u["can_approve"] = bool(r["can_approve"]) or bool(r["is_admin"])
-        u["can_manage_queue"] = bool(r["can_manage_queue"]) or bool(r["is_admin"])
         u["created_at"] = r["created_at"]
         u["last_login"] = r["last_login"]
         out.append(u)
     return web.json_response({"users": out})
 
 
+async def _apply_user_changes(
+    e: Encore, uids: list[int], is_admin: bool | None, set_: list[str] | None,
+    add: list[str], remove: list[str],
+) -> None:
+    from .auth import User, clean_permissions
+
+    rows = [await e.db.fetchone("SELECT * FROM users WHERE id=?", uid) for uid in uids]
+    if any(r is None for r in rows):
+        raise ApiError(404, "User not found")
+    if is_admin is False:
+        admins = await e.db.fetchone("SELECT COUNT(*) AS n FROM users WHERE is_admin=1")
+        demoting = sum(1 for r in rows if r and r["is_admin"])
+        if admins and demoting and admins["n"] - demoting < 1:
+            raise ApiError(409, "Can't remove the last admin")
+    for r in rows:
+        assert r
+        user = User.from_row(r)
+        perms = set(clean_permissions(set_)) if set_ is not None else set(user.granted)
+        perms |= set(clean_permissions(add))
+        perms -= set(clean_permissions(remove))
+        admin_val = int(is_admin) if is_admin is not None else r["is_admin"]
+        await e.db.c.execute(
+            "UPDATE users SET permissions=?, is_admin=? WHERE id=?",
+            (json.dumps(sorted(perms)), admin_val, r["id"]),
+        )
+    await e.db.c.commit()
+    await e.refresh_ws_users()
+    await e.hub.send_all({"type": "users_changed"}, "signed_in")
+
+
+def _perm_list(data: dict[str, Any], key: str) -> list[str] | None:
+    val = data.get(key)
+    if val is None:
+        return None
+    if not isinstance(val, list):
+        raise ApiError(400, f"{key} must be a list")
+    return val
+
+
 @routes.patch("/api/admin/users/{id}")
 async def update_user(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "is_admin")
-    uid = int_param(request, "id")
+    await e.auth.require(request, "admin")
     data = await body(request)
-    row = await e.db.fetchone("SELECT * FROM users WHERE id=?", uid)
-    if not row:
-        raise ApiError(404, "User not found")
-    updates = {k: int(bool(v)) for k, v in data.items() if k in ("is_admin", "can_approve", "can_manage_queue")}
-    if updates.get("is_admin") == 0 and row["is_admin"]:
-        admins = await e.db.fetchone("SELECT COUNT(*) AS n FROM users WHERE is_admin=1")
-        if admins and admins["n"] <= 1:
-            raise ApiError(409, "Can't remove the last admin")
-    for k, v in updates.items():
-        await e.db.execute(f"UPDATE users SET {k}=? WHERE id=?", v, uid)  # noqa: S608 - whitelisted
-    await e.refresh_ws_users()
-    await e.hub.send_all({"type": "users_changed"}, "is_admin")
+    is_admin = data.get("is_admin")
+    await _apply_user_changes(
+        e,
+        [int_param(request, "id")],
+        bool(is_admin) if is_admin is not None else None,
+        _perm_list(data, "permissions"),
+        [],
+        [],
+    )
     return web.json_response({"ok": True})
+
+
+@routes.post("/api/admin/users/bulk")
+async def bulk_update_users(request: web.Request) -> web.Response:
+    """Apply permission changes to several users at once."""
+    csrf_check(request)
+    e = enc(request)
+    await e.auth.require(request, "admin")
+    data = await body(request)
+    ids = data.get("user_ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+        raise ApiError(400, "user_ids must be a non-empty list of ids")
+    is_admin = data.get("is_admin")
+    await _apply_user_changes(
+        e,
+        ids,
+        bool(is_admin) if is_admin is not None else None,
+        _perm_list(data, "set"),
+        _perm_list(data, "add") or [],
+        _perm_list(data, "remove") or [],
+    )
+    return web.json_response({"ok": True, "updated": len(ids)})
 
 
 @routes.delete("/api/admin/users/{id}")
 async def delete_user(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    me_user = await e.auth.require(request, "is_admin")
+    me_user = await e.auth.require(request, "admin")
     uid = int_param(request, "id")
     row = await e.db.fetchone("SELECT * FROM users WHERE id=?", uid)
     if not row:
@@ -322,20 +386,20 @@ async def delete_user(request: web.Request) -> web.Response:
         raise ApiError(409, "You can't delete yourself")
     await e.db.execute("DELETE FROM users WHERE id=?", uid)
     await e.refresh_ws_users()
-    await e.hub.send_all({"type": "users_changed"}, "is_admin")
+    await e.hub.send_all({"type": "users_changed"}, "signed_in")
     return web.json_response({"ok": True})
 
 
 @routes.get("/api/admin/settings")
 async def get_settings(request: web.Request) -> web.Response:
-    await enc(request).auth.require(request, "is_admin")
+    await enc(request).auth.require(request, "admin")
     return web.json_response(enc(request).party.settings())
 
 
 @routes.patch("/api/admin/settings")
 async def patch_settings(request: web.Request) -> web.Response:
     csrf_check(request)
-    await enc(request).auth.require(request, "is_admin")
+    await enc(request).auth.require(request, "admin")
     data = await body(request)
     return web.json_response(await enc(request).party.update_settings(data))
 
@@ -343,7 +407,7 @@ async def patch_settings(request: web.Request) -> web.Response:
 @routes.get("/api/admin/playlists")
 async def playlists(request: web.Request) -> web.Response:
     e = enc(request)
-    await e.auth.require(request, "is_admin")
+    await e.auth.require(request, "admin")
     e.party._require_apple()  # noqa: SLF001
     pls = await e.apple.get_library_playlists()
     return web.json_response({"playlists": [p.to_dict() for p in pls]})
@@ -353,7 +417,7 @@ async def playlists(request: web.Request) -> web.Response:
 async def resolve_playlist(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "is_admin")
+    await e.auth.require(request, "admin")
     e.party._require_apple()  # noqa: SLF001
     data = await body(request)
     pid = e.apple.parse_playlist_ref(str(data.get("url_or_id", "")))
@@ -369,14 +433,14 @@ async def resolve_playlist(request: web.Request) -> web.Response:
 @routes.get("/api/admin/status")
 async def status(request: web.Request) -> web.Response:
     e = enc(request)
-    await e.auth.require(request, "is_admin")
+    await e.auth.require(request, "admin")
     return web.json_response(e.status())
 
 
 @routes.get("/api/admin/apple-music")
 async def apple_status(request: web.Request) -> web.Response:
     e = enc(request)
-    await e.auth.require(request, "is_admin")
+    await e.auth.require(request, "admin")
     return web.json_response(await e.apple_status())
 
 
@@ -384,7 +448,7 @@ async def apple_status(request: web.Request) -> web.Response:
 async def apple_put(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "is_admin")
+    await e.auth.require(request, "admin")
     data = await body(request)
     await e.update_apple_credentials(
         developer_token=data.get("developer_token"), user_token=data.get("user_token")
@@ -396,7 +460,7 @@ async def apple_put(request: web.Request) -> web.Response:
 async def apple_user_token(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "is_admin")
+    await e.auth.require(request, "admin")
     data = await body(request)
     token = data.get("music_user_token") or data.get("music-user-token")
     if not token or not isinstance(token, str):

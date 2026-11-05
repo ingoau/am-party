@@ -386,8 +386,19 @@ class Engine:
                 _on_first(t0 if t0 is not None else time.time())
             next_started = scheduled[0]
             if interrupted:
-                # we were mid-transition; treat incoming track as current
+                # interrupted mid-transition
+                already_switched = bool(self.now and self.now.candidate is nxt)
                 self._cancel_handovers()
+                if self._skip.is_set() and not self.paused and not already_switched:
+                    # skip pressed while the outgoing song was still "now playing":
+                    # jump straight into the incoming song where it is right now
+                    self._skip.clear()
+                    await self.output.end_stream(drain=False)
+                    await self._handover(nxt, nitem, next_started)
+                    pos = seconds_to_bytes(max(0.0, time.time() - next_started))
+                    await self.output.begin_stream()
+                    await self._play_from(nxt, nitem, min(pos, nitem.size), started_at=None)
+                    return
                 await self._handover(nxt, nitem, next_started)
                 await self._interrupt(nxt, nitem)
                 return

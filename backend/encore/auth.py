@@ -31,7 +31,50 @@ GUEST_COOKIE = "encore_guest"
 SESSION_TTL = 30 * 24 * 3600
 STATE_TTL = 600
 
-PERMISSIONS = ("is_admin", "can_approve", "can_manage_queue")
+# Individually grantable permissions. Admins implicitly have all of them, plus
+# managing users and settings.
+PERMISSIONS: dict[str, dict[str, str]] = {
+    "approve_requests": {
+        "label": "Approve requests",
+        "description": "Approve or reject songs guests request",
+        "group": "Requests",
+    },
+    "queue_add": {
+        "label": "Add to queue",
+        "description": "Add songs straight to the queue without approval",
+        "group": "Queue",
+    },
+    "queue_reorder": {
+        "label": "Reorder queue",
+        "description": "Move songs around in the queue",
+        "group": "Queue",
+    },
+    "queue_remove": {
+        "label": "Remove from queue",
+        "description": "Take songs out of the queue",
+        "group": "Queue",
+    },
+    "playback_skip": {
+        "label": "Skip songs",
+        "description": "Skip the current song for every device",
+        "group": "Playback",
+    },
+    "playback_pause": {
+        "label": "Pause & resume",
+        "description": "Pause and resume playback for every device",
+        "group": "Playback",
+    },
+}
+ADMIN = "admin"
+# what the old can_* columns map to (migration)
+LEGACY_APPROVE = ["approve_requests"]
+LEGACY_MANAGE_QUEUE = ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause"]
+
+
+def clean_permissions(perms: Any) -> list[str]:
+    if not isinstance(perms, (list, tuple, set)):
+        return []
+    return sorted({p for p in perms if isinstance(p, str) and p in PERMISSIONS})
 
 
 @dataclass
@@ -42,11 +85,14 @@ class User:
     name: str | None
     picture: str | None
     is_admin: bool
-    can_approve: bool
-    can_manage_queue: bool
+    granted: list[str]
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> User:
+        try:
+            granted = clean_permissions(json.loads(row.get("permissions") or "[]"))
+        except ValueError:
+            granted = []
         return cls(
             id=row["id"],
             sub=row["sub"],
@@ -54,9 +100,21 @@ class User:
             name=row.get("name"),
             picture=row.get("picture"),
             is_admin=bool(row["is_admin"]),
-            can_approve=bool(row["can_approve"]) or bool(row["is_admin"]),
-            can_manage_queue=bool(row["can_manage_queue"]) or bool(row["is_admin"]),
+            granted=granted,
         )
+
+    @property
+    def permissions(self) -> list[str]:
+        """Effective permissions."""
+        return list(PERMISSIONS) if self.is_admin else self.granted
+
+    def has(self, permission: str) -> bool:
+        if permission == ADMIN:
+            return self.is_admin
+        return self.is_admin or permission in self.granted
+
+    def has_any(self) -> bool:
+        return self.is_admin or bool(self.granted)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,8 +123,8 @@ class User:
             "name": self.name or self.email or self.sub,
             "picture": self.picture,
             "is_admin": self.is_admin,
-            "can_approve": self.can_approve,
-            "can_manage_queue": self.can_manage_queue,
+            "permissions": self.permissions,
+            "granted": self.granted,
         }
 
 
@@ -245,9 +303,9 @@ class AuthManager:
                 count = await self.db.fetchone("SELECT COUNT(*) AS n FROM users")
                 first = (count or {}).get("n", 0) == 0
                 await self.db.c.execute(
-                    "INSERT INTO users(sub, email, name, picture, is_admin, can_approve, "
-                    "can_manage_queue, created_at, last_login) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (sub, email, name, picture, int(first), int(first), int(first), now(), now()),
+                    "INSERT INTO users(sub, email, name, picture, is_admin, permissions, "
+                    "created_at, last_login) VALUES(?,?,?,?,?,?,?,?)",
+                    (sub, email, name, picture, int(first), "[]", now(), now()),
                 )
                 await self.db.c.commit()
             except Exception:
@@ -287,7 +345,7 @@ class AuthManager:
         user = await self.current_user(request)
         if not user:
             raise web.HTTPUnauthorized(text="Sign in required")
-        if permission and not getattr(user, permission):
+        if permission and not user.has(permission):
             raise web.HTTPForbidden(text="You don't have permission for this")
         return user
 

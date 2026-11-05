@@ -46,7 +46,9 @@ class Hub:
     async def send_all(self, msg: dict[str, Any], permission: str | None = None) -> None:
         data = json.dumps(msg)
         for ws, user in list(self.clients.items()):
-            if permission and not (user and getattr(user, permission)):
+            if permission == "signed_in" and not user:
+                continue
+            if permission and permission != "signed_in" and not (user and user.has(permission)):
                 continue
             try:
                 await ws.send_str(data)
@@ -385,7 +387,7 @@ class Party:
         )
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)
         assert row
-        await self.hub.send_all({"type": "requests_changed"}, "can_approve")
+        await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         return self._request_out(row, admin=False)
 
     async def my_requests(self, guest_id: str) -> list[dict[str, Any]]:
@@ -426,7 +428,7 @@ class Party:
             track = Track.from_dict(json.loads(row["track"]))
             if not any(q["track"].id == track.id for q in self.queue):
                 await self._insert_queue(track, "request", position, request_id=rid, user=user)
-        await self.hub.send_all({"type": "requests_changed"}, "can_approve")
+        await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         out = await self.db.fetchone(
             "SELECT r.*, u.name AS decider_name FROM requests r "
             "LEFT JOIN users u ON u.id = r.decided_by WHERE r.id=?",
