@@ -95,6 +95,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_pending_per_guest": 3,
     "request_cooldown_seconds": 20,
     "party_name": "Party",
+    # TV screen copy; "" means the built-in default text.
+    "tv_cta_text": "",
+    "tv_paused_text": "",
+    "tv_empty_text": "",
 }
 
 

@@ -43,6 +43,7 @@ async def make_party(tmp_path: Path) -> Party:
         {"requests_open": "false"},
         {"require_approval": 0},
         {"party_name": 42},
+        {"tv_cta_text": 7},
         {"fallback_playlist_id": ["x"]},
         {"crossfade_mode": "loud"},
     ],
@@ -68,6 +69,11 @@ async def test_good_settings(tmp_path: Path) -> None:
     assert s["max_pending_per_guest"] == 1
     s = await p.update_settings({"party_name": "  "})
     assert s["party_name"] == "Party"
+    s = await p.update_settings({"tv_cta_text": "  Scan  me\n now ", "tv_empty_text": "x" * 200})
+    assert s["tv_cta_text"] == "Scan me now" and len(s["tv_empty_text"]) == 80
+    assert p.state()["tv_cta_text"] == "Scan me now"
+    s = await p.update_settings({"tv_cta_text": None, "tv_paused_text": "   "})
+    assert s["tv_cta_text"] == "" and s["tv_paused_text"] == ""  # blank -> built-in default
     await p.db.close()
 
 

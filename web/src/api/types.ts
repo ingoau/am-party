@@ -39,6 +39,10 @@ export type State = {
   listeners: number;
   /** Configured public base URL, used for the QR code ("" when unset). */
   public_url: string;
+  /** Custom TV screen copy; "" = built-in default. */
+  tv_cta_text: string;
+  tv_paused_text: string;
+  tv_empty_text: string;
 };
 
 export type RequestStatus = "pending" | "approved" | "rejected" | "withdrawn";
@@ -127,6 +131,9 @@ export type CrossfadeMode = "smart" | "standard" | "off";
 
 export type Settings = {
   party_name: string;
+  tv_cta_text: string;
+  tv_paused_text: string;
+  tv_empty_text: string;
   requests_open: boolean;
   require_approval: boolean;
   fallback_playlist_id: string | null;
