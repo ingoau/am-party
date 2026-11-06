@@ -42,7 +42,6 @@ export function TvPage() {
   const controlsOff = params.get("display") === "1";
   const [settingsOpen, setSettingsOpen] = useState(false);
   const base = (state?.public_url || location.origin).replace(/\/+$/, "");
-  const requestUrl = `${base}/request`;
   const host = hostOf(base);
   const requestsOpen = state?.requests_open !== false;
 
@@ -153,7 +152,7 @@ export function TvPage() {
           </section>
 
           <aside className="tv__panel" aria-label="Coming up">
-            <RequestCta url={requestUrl} host={host} open={requestsOpen} />
+            <RequestCta url={base} host={host} open={requestsOpen} />
             <div className="tv__divider" aria-hidden />
             <ComingUp upcoming={state!.upcoming} fallback={state!.up_next_fallback} stacked={stacked} />
           </aside>
@@ -168,13 +167,13 @@ export function TvPage() {
                   {requestsOpen ? "Scan the code to pick the first song." : "Requests are paused."}
                 </p>
                 {requestsOpen && (
-                  <Link to="/request" className="tv__idle-qr" aria-label="Request a song">
-                    <QrCode text={requestUrl} className="tv__qr-code" label="QR code: request a song" />
+                  <Link to="/" className="tv__idle-qr" aria-label="Request a song">
+                    <QrCode text={base} className="tv__qr-code" label="QR code: request a song" />
                     <span className="tv__host">{host}</span>
                   </Link>
                 )}
                 {requestsOpen && (
-                  <Link to="/request" className="tv__request-btn">
+                  <Link to="/" className="tv__request-btn">
                     Request a song
                   </Link>
                 )}
@@ -269,14 +268,14 @@ function RequestCta({ url, host, open }: { url: string; host: string; open: bool
   }
   return (
     <>
-      <Link to="/request" className="tv__cta" aria-label="Request a song">
+      <Link to="/" className="tv__cta" aria-label="Request a song">
         <QrCode text={url} className="tv__qr-code" label="QR code: request a song" />
         <div className="tv__cta-text">
           <strong>Pick the next song</strong>
           <span className="tv__host">{host}</span>
         </div>
       </Link>
-      <Link to="/request" className="tv__request-btn">
+      <Link to="/" className="tv__request-btn">
         Request a song
       </Link>
     </>
@@ -657,9 +656,6 @@ function SettingsPopover({
               <span className="sync__label">{syncLabel(status)}</span>
             </div>
             {status.listening && status.codec && <div className="field__hint">Stream: {status.codec}{status.outputLatencyMs !== null ? ` · output latency ${Math.round(status.outputLatencyMs)} ms` : ""}</div>}
-            <div className="popover__actions">
-              <a className="btn btn--ghost btn--sm" href="/admin">Host panel</a>
-            </div>
           </form>
         </div>
       )}

@@ -4,8 +4,8 @@
 
 A self-hosted party jukebox. Any device opens the page and plays the party music **in tight sync** (Sendspin protocol). Guests scan a QR code to request songs from **Apple Music**, every request goes through an **OIDC-authenticated approval panel**, and tracks are mixed with Music Assistant's **smart crossfade**.
 
-- `/` — TV / listening screen: now playing, up next, QR code, listen toggle, mute and volume per device
-- `/request` — guest page (no login): search Apple Music, request songs, see request status
+- `/` — guest page (no login): search Apple Music, request songs, see request status
+- `/tv` — TV / listening screen: now playing, up next, QR code, listen toggle, mute and volume per device
 - `/admin` — sign in with your OIDC provider. The **first user to sign in becomes admin**; everyone after that has no privileges until an admin grants them (approve requests, manage queue, admin)
 
 ## How it works
@@ -48,7 +48,7 @@ Then:
 2. Set `AM_PARTY_ADMIN_EMAILS=you@example.com` (recommended), then open `${AM_PARTY_PUBLIC_URL}/admin` and sign in. Without `AM_PARTY_ADMIN_EMAILS` the *first* person to sign in becomes admin (the log shows a warning until someone has).
 3. **Settings → Apple Music**: click **Connect Apple Music** and sign in with your Apple ID (MusicKit, same flow as Music Assistant). Or provide tokens as files, see below.
 4. **Settings → Fallback playlist**: pick one of your playlists or paste an Apple Music playlist link.
-5. Open `/` on the TVs/speakers, tap **Listen**. Guests scan the QR code.
+5. Open `/tv` on the TVs/speakers, tap **Listen**. Guests scan the QR code.
 
 Put it behind HTTPS (e.g. Cloudflare Tunnel or Tailscale Funnel) so guests' phones can reach it: browsers need a secure context for Opus decoding, and the MusicKit sign-in needs a real https origin.
 

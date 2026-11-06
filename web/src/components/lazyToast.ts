@@ -2,7 +2,7 @@ import { lazy } from "react";
 import type { ExternalToast } from "sonner";
 
 /**
- * Deferred sonner for the guest /request route: the toast library is fetched after first render
+ * Deferred sonner for the guest / route: the toast library is fetched after first render
  * (or on the first toast) instead of being on the page's critical path.
  */
 export const LazyToaster = lazy(() => import("./Toaster").then((m) => ({ default: m.Toaster })));

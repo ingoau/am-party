@@ -3,13 +3,13 @@
 // in-memory data and serves web/dist with SPA fallback. No audio (/sendspin is not mocked).
 //
 //   npm run build && PORT=8930 node mock/server.mjs
-//   open http://localhost:8930/            (TV)   /request (guest)   /admin (host)
+//   open http://localhost:8930/            (guest)   /tv (TV)   /admin (host)
 //
 // /auth/login signs you in as a mock admin (cookie), /auth/logout signs out.
 // MOCK_USER=none|noperm|admin|dj|approver|skipper sets what /auth/login gives you (default admin).
 // /auth/login?as=<user id> signs in as any mock user (handy for testing permission gating).
 // MOCK_NOW_PLAYING=<catalog index> picks the starting track (16 = very long title/artist, 17 = "Dai Dai").
-// /mock/guest?id=x makes this browser guest "x" (who has seeded requests) and opens /request.
+// /mock/guest?id=x makes this browser guest "x" (who has seeded requests) and opens /.
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -357,7 +357,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === "/mock/guest") {
     const id = (url.searchParams.get("id") || "x").replace(/[^\w]/g, "");
-    res.writeHead(302, { Location: "/request", "Set-Cookie": `guest=${id}; Path=/; HttpOnly; SameSite=Lax` });
+    res.writeHead(302, { Location: "/", "Set-Cookie": `guest=${id}; Path=/; HttpOnly; SameSite=Lax` });
     return res.end();
   }
 
