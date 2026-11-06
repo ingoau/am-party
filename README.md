@@ -97,6 +97,10 @@ Apple allows one concurrent stream per account — don't play the same account e
 - Frontend: Vite + React (`web/`). `npm run dev` proxies to `localhost:8930`; `web/mock/server.mjs` is a dependency-free mock backend.
 - API contract: [docs/API.md](docs/API.md).
 
+## License
+
+am-party is licensed under the [GNU General Public License v3.0](LICENSE). It includes Apache-2.0 code from Music Assistant (compatible with GPL-3.0) and its container image bundles GPL-3.0 pywidevine.
+
 ## Credits
 
 am-party vendors code from [Music Assistant](https://github.com/music-assistant/server) (Apache-2.0): the Apple Music provider and the smart fades planner/renderer/analysis. See [NOTICE.md](NOTICE.md) for details and third-party model attributions (Beat This!, S-KEY, FireRedVAD).

@@ -1,6 +1,7 @@
 # am-party
 
-am-party (party jukebox). This file lists third-party code, models and notable
+am-party (Apple Music party jukebox) is licensed under the GNU General Public License
+v3.0; see [LICENSE](LICENSE). This file lists third-party code, models and notable
 dependencies that am-party includes or ships in its container image. The full text of the
 Apache License 2.0, under which the Music Assistant code below is used, is in
 [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
