@@ -15,6 +15,7 @@ import { ArrowUpToLine, GripVertical, ListStart, Pause, Play, Plus, SkipBack, Sk
 import { api, ApiError } from "../../api/client";
 import type { QueueItem, Track, User } from "../../api/types";
 import { useLive } from "../../hooks/live";
+import { useProgress } from "../../hooks/useProgress";
 import { Artwork } from "../../components/Artwork";
 import { LiveProgress } from "../../components/ProgressBar";
 import { TrackRow } from "../../components/TrackRow";
@@ -23,6 +24,9 @@ import { PageHeader, flash } from "./common";
 import { TrackSearch } from "./TrackSearch";
 import { useConfirm } from "./ConfirmDialog";
 import { can } from "./permissions";
+
+/** Matches the backend's PREVIOUS_RESTART: before this many seconds, Previous goes back a song. */
+const PREVIOUS_RESTART = 3;
 
 export function QueueTab({ me }: { me: User }) {
   const { state, clockOffset, refresh } = useLive();
@@ -34,6 +38,8 @@ export function QueueTab({ me }: { me: User }) {
   const [confirmDialog, confirm] = useConfirm();
   const np = state?.now_playing ?? null;
   const paused = state?.paused ?? false;
+  // Only sampled when a pause or new song is seen; while playing, the position is worked out at click time.
+  const pausedPosition = useProgress(np, clockOffset, paused, 60_000);
   const [busy, setBusy] = useState(false);
   // Local optimistic ordering while a move is in flight.
   const [optimistic, setOptimistic] = useState<QueueItem[] | null>(null);
@@ -105,6 +111,45 @@ export function QueueTab({ me }: { me: User }) {
     if (ok) void run(() => api.skip(), `Skipped “${np.title}”`);
   };
 
+  const previous = async () => {
+    if (!np) return;
+    // Decided now, not when the dialog is confirmed (the server is told the position at click).
+    const at = paused ? pausedPosition : Math.max(0, Date.now() / 1000 + clockOffset - np.started_at);
+    const back = at <= PREVIOUS_RESTART;
+    const ok = await confirm(
+      back
+        ? {
+            title: "Go back to the previous song?",
+            description: `“${np.title}” will play again right after it. This changes the music for everyone on all devices.`,
+            confirmLabel: "Go back for everyone",
+          }
+        : {
+            title: `Restart “${np.title}”?`,
+            description: "This restarts the song for everyone listening on all devices.",
+            confirmLabel: "Restart for everyone",
+          },
+    );
+    if (ok) void run(() => api.previous(at, np.id));
+  };
+
+  const pause = async () => {
+    const ok = await confirm({
+      title: "Pause playback?",
+      description: "This pauses the music for everyone listening on all devices.",
+      confirmLabel: "Pause for everyone",
+    });
+    if (ok) void run(() => api.pause(), "Paused on every device");
+  };
+
+  const resume = async () => {
+    const ok = await confirm({
+      title: "Resume playback?",
+      description: "This resumes the music for everyone listening on all devices.",
+      confirmLabel: "Resume for everyone",
+    });
+    if (ok) void run(() => api.resume(), "Resumed on every device");
+  };
+
   const add = (t: Track, position: "next" | "end") =>
     run(() => api.queueAdd(t.id, position), position === "next" ? `“${t.title}” plays next` : `Added “${t.title}”`);
 
@@ -151,7 +196,7 @@ export function QueueTab({ me }: { me: User }) {
                   <button
                     className="btn"
                     disabled={busy || !np}
-                    onClick={() => run(() => api.previous())}
+                    onClick={previous}
                     title="Restart this song, or go back to the previous one if it just started"
                   >
                     <SkipBack size={18} fill="currentColor" /> Previous
@@ -162,7 +207,7 @@ export function QueueTab({ me }: { me: User }) {
                     <button
                       className="btn btn--primary"
                       disabled={busy}
-                      onClick={() => run(() => api.resume(), "Resumed on every device")}
+                      onClick={resume}
                       title="Resume playback on every device"
                     >
                       <Play size={18} fill="currentColor" /> Resume
@@ -171,7 +216,7 @@ export function QueueTab({ me }: { me: User }) {
                     <button
                       className="btn"
                       disabled={busy || !np}
-                      onClick={() => run(() => api.pause(), "Paused on every device")}
+                      onClick={pause}
                       title="Pause playback on every device"
                     >
                       <Pause size={18} fill="currentColor" /> Pause

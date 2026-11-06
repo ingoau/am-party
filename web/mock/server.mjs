@@ -441,8 +441,10 @@ const server = http.createServer(async (req, res) => {
     const pos = () => (paused ? pausedAt : now()) - nowPlaying.started_at;
     if (m[1] === "skip") { paused = false; advance(); }
     else if (m[1] === "previous") {
+      const body = await readBody(req);
       if (!nowPlaying) return err(res, 409, "Nothing is playing");
-      if (pos() > 3 || !played.length) nowPlaying.started_at = (paused ? pausedAt : now());
+      if (body.track_id != null && body.track_id !== nowPlaying.track.id) return err(res, 409, "The song changed. Try again.");
+      if ((typeof body.at === "number" ? body.at : pos()) > 3 || !played.length) nowPlaying.started_at = (paused ? pausedAt : now());
       else {
         upcoming.unshift({ id: nextId++, track: nowPlaying.track, source: nowPlaying.source, request_id: null });
         nowPlaying = { ...played.pop(), started_at: paused ? pausedAt : now() };

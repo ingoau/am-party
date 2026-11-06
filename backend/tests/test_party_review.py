@@ -445,6 +445,32 @@ async def test_previous_goes_back_through_history(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_previous_uses_position_from_click(tmp_path: Path) -> None:
+    from am_party.player.engine import Candidate, NowPlaying
+
+    p = await make_party(tmp_path)
+    eng = _FakeEngine()
+    p.engine = eng  # type: ignore[assignment]
+    for tid in ("A", "B"):
+        c = Candidate(Track(id=tid, title=tid, artist="a"), None, "admin")
+        eng.now = NowPlaying(candidate=c, prepared=None, started_at=0)  # type: ignore[arg-type]
+        await p.on_track_started(eng.now)
+
+    # the song changed while the confirmation dialog was open
+    eng.pos = 8.0
+    with pytest.raises(ApiError) as exc:
+        await p.previous(at=1.0, track_id="Z")
+    assert exc.value.status == 409
+    assert not eng.seeks and not eng.skips
+
+    # pressed at 1 s, confirmed at 8 s: still goes back
+    assert await p.previous(at=1.0, track_id="B") == "previous"
+    assert [q["track"].id for q in p.queue] == ["A", "B"]
+    await p.close()
+    await p.db.close()
+
+
+@pytest.mark.asyncio
 async def test_previous_with_nothing_playing(tmp_path: Path) -> None:
     p = await make_party(tmp_path)
     p.engine = _FakeEngine()  # type: ignore[assignment]
