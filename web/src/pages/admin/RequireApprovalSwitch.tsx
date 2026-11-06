@@ -47,8 +47,8 @@ export function RequireApprovalSwitch({ className }: { className?: string }) {
     setPendingValue(enabled);
     try {
       const r = await api.setRequireApproval(enabled);
-      if (enabled) flash.ok("Approval is on — new requests wait for you");
-      else flash.ok(r.approved > 0 ? `Approval is off — approved ${plural(r.approved, "waiting request")}` : "Approval is off — requests go straight to the queue");
+      if (enabled) flash.ok("Approval is on. New requests wait for you.");
+      else flash.ok(r.approved > 0 ? `Approval is off. Approved ${plural(r.approved, "waiting request")}.` : "Approval is off. Requests go straight to the queue.");
       // If the socket is down, don't leave the switch stuck in its optimistic state.
       window.setTimeout(() => setPendingValue(null), 4000);
     } catch (e) {

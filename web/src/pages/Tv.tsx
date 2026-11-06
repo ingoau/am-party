@@ -19,7 +19,7 @@ const INTRO_MS = 6000;
 /** Taps on hidden controls only reveal them; they arm this long after appearing. */
 const ARM_MS = 300;
 /** Crossfade length between tracks (artwork + backdrop). Keep in sync with tv.css. */
-const FADE_MS = 900;
+const FADE_MS = 600;
 /** Phone / portrait: the stacked layout (keep in sync with the media query in tv.css). */
 const STACKED_MQ = "(max-width: 699px), (orientation: portrait)";
 /** Most rows the "Coming up" list ever shows (TV); phones show at most this many too. */
@@ -103,7 +103,7 @@ export function TvPage() {
   // The party name lives in the browser title only (the screen itself stays uncluttered).
   useEffect(() => {
     const party = state?.party_name || "Encore";
-    document.title = np ? `${np.title} · ${np.artist} — ${party}` : party;
+    document.title = np ? `${np.title} · ${np.artist} · ${party}` : party;
   }, [np?.title, np?.artist, state?.party_name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stacked = useMediaQuery(STACKED_MQ);
@@ -167,7 +167,7 @@ export function TvPage() {
             {state && (
               <>
                 <p className="tv__idle-sub">
-                  {requestsOpen ? "Scan the code to pick the first song." : "Requests are paused for now."}
+                  {requestsOpen ? "Scan the code to pick the first song." : "Requests are paused."}
                 </p>
                 {requestsOpen && (
                   <Link to="/request" className="tv__idle-qr" aria-label="Request a song">
@@ -208,7 +208,7 @@ export function TvPage() {
               onClick={toggleListen}
               aria-pressed={sp.status.listening}
               aria-label={sp.status.listening ? "Stop listening on this device" : "Listen on this device"}
-              title={sp.status.listening ? "Listening — click to stop (Enter)" : "Listen on this device (Enter)"}
+              title={sp.status.listening ? "Stop listening (Enter)" : "Listen on this device (Enter)"}
             >
               {sp.status.listening ? (
                 <span className="eq" aria-hidden>
@@ -261,7 +261,6 @@ function RequestCta({ url, host, open }: { url: string; host: string; open: bool
       <div className="tv__cta tv__cta--closed">
         <div className="tv__cta-text">
           <strong>Requests are paused</strong>
-          <span className="tv__host">Back soon</span>
         </div>
       </div>
     );
@@ -329,29 +328,29 @@ function ComingUp({ state, stacked }: { state: State; stacked: boolean }) {
             <span className="cu__artist">Probe</span>
           </span>
         </li>
-        {shown.map((q, i) => (
-          <Row key={q.id} track={q.track} index={i} />
+        {shown.map((q) => (
+          <Row key={q.id} track={q.track} />
         ))}
         {upcoming.length === 0 &&
           (fallback ? (
-            <Row track={fallback} index={0} dim />
+            <Row track={fallback} dim />
           ) : (
-            <li className="cu__empty">Nothing queued yet. Request something!</li>
+            <li className="cu__empty">No requests yet. Scan the code to pick one.</li>
           ))}
         <li className={cx("cu__more", more <= 0 && "is-hidden")} ref={moreRef} aria-hidden={more <= 0}>
           +{Math.max(1, more)} more
         </li>
       </ol>
-      {upcoming.length === 0 && fallback && <p className="cu__hint">No requests yet. Scan the code to pick one!</p>}
+      {upcoming.length === 0 && fallback && <p className="cu__hint">No requests yet. Scan the code to pick one.</p>}
     </div>
   );
 }
 
-function Row({ track, index, dim }: { track: Track; index: number; dim?: boolean }) {
+function Row({ track, dim }: { track: Track; dim?: boolean }) {
   const [failed, setFailed] = useState(false);
   const src = artworkAt(track.artwork_url, 160);
   return (
-    <li className={cx("cu__row", dim && "cu__row--dim")} style={{ animationDelay: `${index * 50}ms` }}>
+    <li className={cx("cu__row", dim && "cu__row--dim")}>
       {src && !failed ? (
         <img className="cu__thumb" src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
       ) : (

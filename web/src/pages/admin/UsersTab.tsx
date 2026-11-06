@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, Info, Minus, Shield, ShieldCheck, ShieldOff, Trash2, UserMinus, UserPlus, X } from "lucide-react";
+import { Check, ChevronDown, Minus, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
 import { api } from "../../api/client";
 import { ALL_PERMISSIONS, type Permission, type PermissionInfo, type User } from "../../api/types";
 import { useLiveEvent } from "../../hooks/live";
@@ -137,7 +137,7 @@ export function UsersTab({ me }: { me: User }) {
     const n = selectedUsers.length;
     const ok = await confirm({
       title: n === 1 ? `Make ${selectedUsers[0]!.name} an admin?` : `Make ${n} people admins?`,
-      description: "Admins have every permission and can manage people and settings — including removing other admins.",
+      description: "Admins have every permission and can manage people and settings, including removing other admins.",
       confirmLabel: n === 1 ? "Make admin" : `Make ${n} admins`,
       icon: <ShieldCheck size={22} />,
     });
@@ -146,7 +146,7 @@ export function UsersTab({ me }: { me: User }) {
   const bulkRemoveAdmin = async () => {
     if (selected.has(me.id)) {
       const ok = await confirm({
-        title: "Remove admin — including yourself?",
+        title: "Remove admin, including yourself?",
         description: "Your selection includes you. You'll lose People and Settings straight away.",
         confirmLabel: "Remove admin",
         danger: true,
@@ -231,7 +231,6 @@ export function UsersTab({ me }: { me: User }) {
             <div className="bulk-bar__actions">
               <PermMenu
                 label="Grant"
-                icon={<UserPlus size={16} />}
                 groups={groups}
                 disabled={bulkBusy}
                 presets
@@ -239,7 +238,6 @@ export function UsersTab({ me }: { me: User }) {
               />
               <PermMenu
                 label="Revoke"
-                icon={<UserMinus size={16} />}
                 groups={groups}
                 disabled={bulkBusy}
                 onPick={(perms, name) =>
@@ -252,25 +250,25 @@ export function UsersTab({ me }: { me: User }) {
               />
               <div className="bulk-bar__admin">
                 <button className="btn btn--sm" disabled={bulkBusy} onClick={bulkMakeAdmin}>
-                  <ShieldCheck size={16} /> Make admin
+                  Make admin
                 </button>
                 <button className="btn btn--sm" disabled={bulkBusy} onClick={bulkRemoveAdmin}>
-                  <ShieldOff size={16} /> Remove admin
+                  Remove admin
                 </button>
               </div>
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger asChild>
                   <button className="btn btn--sm bulk-bar__admin-menu" disabled={bulkBusy}>
-                    <Shield size={16} /> Admin <ChevronDown size={14} />
+                    Admin <ChevronDown size={14} aria-hidden />
                   </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Portal>
                   <DropdownMenu.Content className="menu" side="top" align="end" sideOffset={8} collisionPadding={12}>
                     <DropdownMenu.Item className="menu__item" onSelect={bulkMakeAdmin}>
-                      <ShieldCheck size={16} /> Make admin
+                      Make admin
                     </DropdownMenu.Item>
                     <DropdownMenu.Item className="menu__item" onSelect={bulkRemoveAdmin}>
-                      <ShieldOff size={16} /> Remove admin
+                      Remove admin
                     </DropdownMenu.Item>
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>
@@ -352,7 +350,7 @@ function UserRow({
         onClick={onExpand}
         aria-expanded={expanded}
         aria-controls={panelId}
-        aria-label={`${role.label} — edit permissions for ${u.name}`}
+        aria-label={`${role.label}. Edit permissions for ${u.name}`}
         title="Edit permissions"
       >
         <span>{role.label}</span>
@@ -434,7 +432,7 @@ function PermSwitch({
   return (
     <label
       className={cx("perm", admin && "perm--admin", disabled && "is-disabled")}
-      title={disabled ? `${info.label} — included with admin` : `${info.label}: ${info.description}`}
+      title={disabled ? `${info.label}: included with admin` : `${info.label}: ${info.description}`}
     >
       <span className="perm__label">{info.label}</span>
       <input type="checkbox" role="switch" checked={checked} disabled={disabled} onChange={onChange} aria-label={`${info.label} for ${who}`} />
@@ -474,7 +472,7 @@ function PermissionGuide({ groups }: { groups: PermissionGroup[] }) {
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button className="btn btn--ghost btn--sm">
-          <Info size={16} /> About permissions
+          About permissions
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
@@ -505,7 +503,6 @@ function PermissionGuide({ groups }: { groups: PermissionGroup[] }) {
 
 function PermMenu({
   label,
-  icon,
   groups,
   disabled,
   presets,
@@ -514,7 +511,6 @@ function PermMenu({
   onPick,
 }: {
   label: string;
-  icon: ReactNode;
   groups: PermissionGroup[];
   disabled?: boolean;
   presets?: boolean;
@@ -526,7 +522,7 @@ function PermMenu({
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button className="btn btn--sm" disabled={disabled}>
-          {icon} {label} <ChevronDown size={14} />
+          {label} <ChevronDown size={14} aria-hidden />
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>

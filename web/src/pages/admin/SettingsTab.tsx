@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { api } from "../../api/client";
 import type { AdminStatus, AppleMusicStatus, CrossfadeMode, Playlist, Settings } from "../../api/types";
 import { Artwork } from "../../components/Artwork";
-import { Check, Music } from "lucide-react";
+import { Check } from "lucide-react";
 import { cx, fmtDate } from "../../util";
 import { PageHeader, flash } from "./common";
 import { RequireApprovalSwitch } from "./RequireApprovalSwitch";
@@ -192,7 +192,7 @@ export function SettingsTab() {
                   <span className="warn-text">
                     {" "}
                     Smart fades are unavailable{status?.smart_fades.error ? ` (${status.smart_fades.error})` : ""}
-                    {draft.crossfade_mode === "smart" ? " — a standard fade is used instead." : "."}
+                    {draft.crossfade_mode === "smart" ? ". A standard fade is used instead." : "."}
                   </span>
                 )}
               </span>
@@ -415,12 +415,7 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
   return (
     <section className="card am-card">
       <div className="am-card__head">
-        <div className="am-logo" aria-hidden>
-          <Music size={22} />
-        </div>
-        <div>
-          <h2 className="card__title">Apple Music</h2>
-        </div>
+        <h2 className="card__title">Apple Music</h2>
         {am && (
           <span className={cx("pill", am.ok ? "pill--ok" : am.configured ? "pill--err" : "pill--off")}>
             {am.ok ? "Connected" : am.configured ? "Error" : "Not connected"}
@@ -434,7 +429,7 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
           {am.error && <div className="banner banner--err">{am.error}</div>}
           <dl className="kv">
             <dt>Storefront</dt>
-            <dd>{am.storefront ? am.storefront.toUpperCase() : "—"}</dd>
+            <dd>{am.storefront ? am.storefront.toUpperCase() : <span className="muted">Not set</span>}</dd>
             <dt>Developer token</dt>
             <dd>
               {am.developer_token_source ? (
@@ -478,7 +473,7 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
                   Connect Apple Music
                 </button>
                 <span className="field__hint">
-                  {expired ? "The developer token has expired — paste a new one below." : "Add a developer token first (below or in the server config)."}
+                  {expired ? "The developer token has expired. Paste a new one below." : "Add a developer token first (below or in the server config)."}
                 </span>
               </>
             )}

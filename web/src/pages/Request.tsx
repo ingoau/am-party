@@ -8,7 +8,7 @@ import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { Artwork } from "../components/Artwork";
 import { ProgressBar } from "../components/ProgressBar";
 import { TrackRow } from "../components/TrackRow";
-import { Check, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { LazyToaster, lazyToast as toast } from "../components/lazyToast";
 import { artworkAt, cx } from "../util";
 import "../styles/request.css";
@@ -25,9 +25,9 @@ function friendlyError(e: unknown): string {
       case 409:
         return "That song is already in the queue or waiting for approval.";
       case 429:
-        return e.message && !/^\d{3}\b/.test(e.message) ? e.message : "Easy there! Wait a bit before requesting more.";
+        return e.message && !/^\d{3}\b/.test(e.message) ? e.message : "Wait a moment before requesting more.";
       case 503:
-        return "Search isn't available right now. Ask the host!";
+        return "Search isn't available right now.";
       default:
         return e.message || "Something went wrong.";
     }
@@ -52,7 +52,7 @@ export function RequestPage() {
   const [pendingTrack, setPendingTrack] = useState<string | null>(null);
 
   useEffect(() => {
-    document.title = `Request a song — ${state?.party_name || "Encore"}`;
+    document.title = `Request a song · ${state?.party_name || "Encore"}`;
   }, [state?.party_name]);
 
   // Debounced search with abort of stale requests.
@@ -139,7 +139,7 @@ export function RequestPage() {
       toast.success(`Withdrew “${r.track.title}”.`, { duration: 3000 });
     } catch (e) {
       toast.error(
-        e instanceof ApiError && e.status === 409 ? "Too late — it's already about to play." : friendlyError(e),
+        e instanceof ApiError && e.status === 409 ? "It's about to play, so it can't be withdrawn." : friendlyError(e),
         { duration: 4500 },
       );
     } finally {
@@ -170,7 +170,6 @@ export function RequestPage() {
 
   return (
     <div className="req">
-      <div className="req__glow" aria-hidden />
       <header className="req__header">
         <h1 className="req__party">{state?.party_name || "Encore"}</h1>
       </header>
@@ -237,15 +236,13 @@ export function RequestPage() {
                     track={t}
                     actions={
                       st === "pending" ? (
-                        <span className="badge badge--pending">Pending</span>
+                        <span className="row-state row-state--wait">Waiting</span>
                       ) : st === "approved" || queued ? (
-                        <span className="badge badge--approved">
-                          <Check size={14} /> {np?.id === t.id ? "Playing" : queued ? "Queued" : "Approved"}
-                        </span>
+                        <span className="row-state">{np?.id === t.id ? "Playing" : queued ? "Queued" : "Approved"}</span>
                       ) : (
                         <button
                           type="button"
-                          className="btn btn--primary btn--sm"
+                          className="btn btn--sm"
                           disabled={closed || pendingTrack !== null}
                           onClick={() => doRequest(t)}
                         >
@@ -267,7 +264,7 @@ export function RequestPage() {
       {tab === "mine" && (
         <section className="list" role="tabpanel" id="panel-mine" aria-labelledby="tab-mine">
           {shownMine.length === 0 ? (
-            <p className="empty">You haven't requested anything yet.</p>
+            <p className="empty">No requests yet. Search to add one.</p>
           ) : (
             shownMine.map((r) => <MyRequestRow key={r.id} r={r} nowPlayingId={np?.id ?? null} onWithdraw={() => withdraw(r)} />)
           )}
@@ -286,7 +283,7 @@ export function RequestPage() {
               />
             ))
           ) : (
-            <p className="empty">Nothing queued yet — your request could be next!</p>
+            <p className="empty">No requests yet. Search to add one.</p>
           )}
           {state && state.upcoming.length === 0 && state.up_next_fallback && (
             <TrackRow track={state.up_next_fallback} dim meta={<span className="muted">then, from the playlist</span>} />
@@ -331,7 +328,7 @@ function MyRequestRow({ r, nowPlayingId, onWithdraw }: { r: SongRequest; nowPlay
   } else if (r.status === "approved") {
     status = "Played";
   } else {
-    status = "Not this time";
+    status = "Declined";
   }
 
   return (
@@ -342,20 +339,16 @@ function MyRequestRow({ r, nowPlayingId, onWithdraw }: { r: SongRequest; nowPlay
       meta={<span className={`req-status req-status--${tone}`}>{status}</span>}
       actions={
         r.can_withdraw ? (
-          confirming ? (
-            <div className="btn-group">
-              <button type="button" className="icon-btn" onClick={() => setConfirming(false)} aria-label="Keep this request" title="Keep">
-                <X size={18} />
-              </button>
-              <button type="button" className="btn btn--danger-ghost btn--sm" onClick={onWithdraw} autoFocus>
-                Withdraw
-              </button>
-            </div>
-          ) : (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setConfirming(true)} aria-label={`Withdraw “${r.track.title}”`}>
-              Withdraw
-            </button>
-          )
+          <button
+            type="button"
+            className={cx("withdraw", confirming && "is-confirming")}
+            onClick={() => (confirming ? onWithdraw() : setConfirming(true))}
+            onBlur={() => setConfirming(false)}
+            onKeyDown={(e) => e.key === "Escape" && setConfirming(false)}
+            aria-label={confirming ? `Confirm: withdraw “${r.track.title}”` : `Withdraw “${r.track.title}”`}
+          >
+            {confirming ? "Yes, withdraw" : "Withdraw"}
+          </button>
         ) : (
           <span />
         )

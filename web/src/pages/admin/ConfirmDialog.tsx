@@ -7,6 +7,7 @@ export type ConfirmOptions = {
   description: ReactNode;
   confirmLabel: string;
   cancelLabel?: string;
+  /** Accepted for compatibility; dialogs no longer show an icon. */
   icon?: ReactNode;
   /** Red confirm button for destructive actions. */
   danger?: boolean;
@@ -41,7 +42,6 @@ export function useConfirm(): [ReactNode, (o: ConfirmOptions) => Promise<boolean
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="dialog-overlay" />
         <AlertDialog.Content className="dialog">
-          {opts?.icon && <div className={cx("dialog__icon", opts.danger && "dialog__icon--danger")}>{opts.icon}</div>}
           <AlertDialog.Title className="dialog__title">{opts?.title}</AlertDialog.Title>
           <AlertDialog.Description className="dialog__desc">{opts?.description}</AlertDialog.Description>
           <div className="dialog__actions">

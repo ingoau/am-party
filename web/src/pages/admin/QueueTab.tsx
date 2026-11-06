@@ -178,7 +178,7 @@ export function QueueTab({ me }: { me: User }) {
               <strong>Queue is empty</strong>
               {state?.up_next_fallback && (
                 <span>
-                  Then from the playlist: {state.up_next_fallback.title} — {state.up_next_fallback.artist}
+                  Next from the fallback playlist: {state.up_next_fallback.title} by {state.up_next_fallback.artist}
                 </span>
               )}
             </div>
@@ -213,7 +213,6 @@ export function QueueTab({ me }: { me: User }) {
                           className="card-row"
                           wrap
                           lead={canReorder ? handle : undefined}
-                          meta={q.source === "request" ? <span className="muted">Guest request</span> : undefined}
                           actions={
                             (canReorder || canRemove) && (
                             <div className="btn-group btn-group--icons">
@@ -247,7 +246,9 @@ export function QueueTab({ me }: { me: User }) {
             </DndContext>
           )}
           {upcoming.length > 0 && state?.up_next_fallback && (
-            <TrackRow track={state.up_next_fallback} dim meta={<span className="muted">then, from the playlist</span>} />
+            <div className="queue-fallback">
+              <TrackRow track={state.up_next_fallback} dim className="card-row" meta={<span className="muted">Then from the fallback playlist</span>} />
+            </div>
           )}
         </section>
 
@@ -257,12 +258,12 @@ export function QueueTab({ me }: { me: User }) {
           <TrackSearch
             actions={(t) => (
               <div className="btn-group">
-                <button className="btn btn--sm" disabled={busy} onClick={() => add(t, "next")} title="Play next">
-                  <ListStart size={16} />
-                  <span className="hide-sm">Next</span>
+                <button className="btn btn--sm" disabled={busy} onClick={() => add(t, "next")} aria-label="Play next" title="Play next">
+                  <ListStart size={16} className="show-sm" aria-hidden />
+                  <span className="hide-sm">Play next</span>
                 </button>
-                <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => add(t, "end")} title="Add to end of queue">
-                  <Plus size={16} />
+                <button className="btn btn--sm" disabled={busy} onClick={() => add(t, "end")} aria-label="Add to end of queue" title="Add to end of queue">
+                  <Plus size={16} className="show-sm" aria-hidden />
                   <span className="hide-sm">Add</span>
                 </button>
               </div>

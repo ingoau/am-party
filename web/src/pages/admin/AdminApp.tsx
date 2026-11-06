@@ -40,7 +40,7 @@ export default function AdminApp() {
   useLiveEvent("users_changed", load);
 
   useEffect(() => {
-    document.title = `Host — ${state?.party_name || "Encore"}`;
+    document.title = `Host · ${state?.party_name || "Encore"}`;
   }, [state?.party_name]);
 
   if (error && !me) {
@@ -82,12 +82,7 @@ export default function AdminApp() {
 
   if (allowed.length === 0) {
     return (
-      <Gate title={`Hi ${user.name.split(" ")[0] || "there"} 👋`} body="You're signed in. Waiting for an admin to grant you access — this page will update automatically.">
-        <div className="waiting-dots" aria-hidden>
-          <span />
-          <span />
-          <span />
-        </div>
+      <Gate title="Waiting for access" body={`You're signed in as ${user.name}. An admin needs to give you access. This page updates on its own.`}>
         <button className="btn btn--ghost" onClick={signOut}>
           Sign out
         </button>

@@ -4,7 +4,7 @@ import type { SongRequest } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { TrackRow } from "../../components/TrackRow";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, CheckCheck, ChevronDown, ListStart, X } from "lucide-react";
+import { CheckCheck, ChevronDown } from "lucide-react";
 import { StatusBadge } from "../../components/StatusBadge";
 import { cx, timeAgo } from "../../util";
 import { PageHeader, flash } from "./common";
@@ -113,9 +113,9 @@ export function RequestsTab() {
               className="btn btn--primary btn--sm split-btn__main"
               disabled={approvingAll}
               onClick={() => void approveAll("end")}
-              title="Approve every waiting request — add them to the end of the queue, oldest first"
+              title="Approve every waiting request and add them to the end of the queue, oldest first"
             >
-              <CheckCheck size={16} /> Approve all ({pendingCount})
+              Approve all {pendingCount}
             </button>
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
@@ -140,7 +140,7 @@ export function RequestsTab() {
         )}
       </PageHeader>
 
-      {state && !state.requests_open && <div className="banner banner--warn">Requests are closed — guests can't send new ones.</div>}
+      {state && !state.requests_open && <div className="banner banner--warn">Requests are closed. Guests can't send new ones.</div>}
 
       <div className="segmented" role="tablist">
         <button role="tab" aria-selected={view === "pending"} className={cx(view === "pending" && "is-active")} onClick={() => setView("pending")}>
@@ -156,9 +156,19 @@ export function RequestsTab() {
       ) : list.length === 0 ? (
         <div className="empty-state">
           {view === "pending" ? (
-            <strong>{requireApproval ? "All caught up" : "Requests go straight to the queue"}</strong>
+            requireApproval ? (
+              <>
+                <strong>No requests waiting</strong>
+                <span>New guest requests show up here.</span>
+              </>
+            ) : (
+              <>
+                <strong>Approval is off</strong>
+                <span>Guest requests go straight to the queue.</span>
+              </>
+            )
           ) : (
-            <span>No decisions yet.</span>
+            <strong>No decisions yet</strong>
           )}
         </div>
       ) : (
@@ -179,12 +189,11 @@ export function RequestsTab() {
                 r.status === "pending" ? (
                   <div className="btn-group">
                     <button
-                      className="btn btn--primary btn--sm"
+                      className="btn btn--ghost btn--sm"
                       disabled={busy.has(r.id)}
-                      onClick={() => act(r, () => api.approve(r.id, "end"), `Queued “${r.track.title}”`)}
-                      title="Approve — add to the end of the queue"
+                      onClick={() => act(r, () => api.reject(r.id), "Request declined")}
                     >
-                      <Check size={16} /> Approve
+                      Decline
                     </button>
                     <button
                       className="btn btn--sm"
@@ -192,26 +201,24 @@ export function RequestsTab() {
                       onClick={() => act(r, () => api.approve(r.id, "next"), `“${r.track.title}” plays next`)}
                       title="Approve and play next"
                     >
-                      <ListStart size={16} /> Play next
+                      Play next
                     </button>
                     <button
-                      className="btn btn--danger-ghost btn--sm"
+                      className="btn btn--primary btn--sm"
                       disabled={busy.has(r.id)}
-                      onClick={() => act(r, () => api.reject(r.id), "Request declined")}
-                      aria-label="Reject"
-                      title="Reject"
+                      onClick={() => act(r, () => api.approve(r.id, "end"), `Queued “${r.track.title}”`)}
+                      title="Approve and add to the end of the queue"
                     >
-                      <X size={16} />
-                      <span className="hide-sm">Reject</span>
+                      Approve
                     </button>
                   </div>
                 ) : (
                   r.status === "approved" && !r.decided_by ? (
-                    <span className="badge badge--approved" title="Approved automatically while approval was off">
+                    <span className="status-text" title="Approved automatically while approval was off">
                       Auto-approved
                     </span>
                   ) : (
-                    <StatusBadge status={r.status} admin />
+                    <StatusBadge status={r.status} />
                   )
                 )
               }
