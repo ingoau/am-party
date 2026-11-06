@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useLive } from "../hooks/live";
 import { useProgress } from "../hooks/useProgress";
 import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { useIdle } from "../hooks/useIdle";
 import { useSendspin, type SendspinStatus } from "../hooks/useSendspin";
-import { Artwork } from "../components/Artwork";
 import { ProgressBar } from "../components/ProgressBar";
 import { QrCode } from "../components/QrCode";
-import { Headphones, Settings, SquareLetterE, Volume2, VolumeX, WifiOff } from "lucide-react";
+import { Headphones, Music, Pause, Settings, SquareLetterE, Volume2, VolumeX, WifiOff } from "lucide-react";
+import type { State, Track } from "../api/types";
 import { artworkAt, cx, storage } from "../util";
 import "../styles/tv.css";
 
@@ -18,6 +18,13 @@ const IDLE_MS = 3000;
 const INTRO_MS = 6000;
 /** Taps on hidden controls only reveal them; they arm this long after appearing. */
 const ARM_MS = 300;
+/** Crossfade length between tracks (artwork + backdrop). Keep in sync with tv.css. */
+const FADE_MS = 900;
+/** Phone / portrait: the stacked layout (keep in sync with the media query in tv.css). */
+const STACKED_MQ = "(max-width: 699px), (orientation: portrait)";
+/** Most rows the "Coming up" list ever shows (TV); phones show at most this many too. */
+const MAX_ROWS = 8;
+const MAX_ROWS_STACKED = 6;
 
 export function TvPage() {
   const { state, clockOffset, status: wsStatus } = useLive();
@@ -32,7 +39,10 @@ export function TvPage() {
   // Wall displays: ?display=1 suppresses the listen controls (and their shortcuts) entirely.
   const controlsOff = params.get("display") === "1";
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const requestUrl = `${state?.public_url || location.origin}/request`;
+  const base = (state?.public_url || location.origin).replace(/\/+$/, "");
+  const requestUrl = `${base}/request`;
+  const host = hostOf(base);
+  const requestsOpen = state?.requests_open !== false;
 
   // The old persistent "Display only" switch is gone (not listening == display only).
   useEffect(() => {
@@ -90,100 +100,94 @@ export function TvPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // The party name lives in the browser title only (the screen itself stays uncluttered).
   useEffect(() => {
     const party = state?.party_name || "Encore";
     document.title = np ? `${np.title} · ${np.artist} — ${party}` : party;
   }, [np?.title, np?.artist, state?.party_name]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const upcoming = state?.upcoming ?? [];
-  const shown = upcoming.slice(0, 4);
-  const more = upcoming.length - shown.length;
+  const stacked = useMediaQuery(STACKED_MQ);
   const bg = artworkAt(np?.artwork_url, 300);
+  const longTitle = !!np && np.title.length > 18;
 
   return (
-    <div className={cx("tv", idle && "tv--idle", accent && "tv--accent")}>
+    <div className={cx("tv", idle && "tv--idle", paused && np && "tv--paused", !np && "tv--empty")}>
       <div className="tv__backdrop" aria-hidden>
-        {bg && <img key={bg} src={bg} alt="" className="tv__backdrop-img" />}
+        <Crossfade
+          url={bg}
+          render={(src, onReady) =>
+            src ? <img src={src} alt="" className="tv__backdrop-img" onLoad={onReady} onError={onReady} /> : <ReadyNow onReady={onReady} />
+          }
+        />
         <div className="tv__backdrop-shade" />
       </div>
 
-      <header className="tv__header">
-        <div className="brand">
-          <span className="brand__mark" aria-hidden>
-            <span />
-            <span />
-            <span />
-          </span>
-          <span className="brand__party">{state?.party_name || "Encore"}</span>
-        </div>
-        <div className="tv__header-right">
-          {wsStatus !== "live" && (
-            <span className={cx("chip", "chip--warn")} title="Live updates">
-              <WifiOff size={18} />
-              {wsStatus === "connecting" ? "Connecting…" : wsStatus === "polling" ? "Reconnecting…" : "Offline"}
-            </span>
-          )}
-        </div>
-      </header>
+      {wsStatus !== "live" && (
+        <span className="chip chip--warn tv__conn" role="status" title="Live updates">
+          <WifiOff aria-hidden />
+          {wsStatus === "connecting" ? "Connecting…" : wsStatus === "polling" ? "Reconnecting…" : "Offline"}
+        </span>
+      )}
 
-      <main className="tv__main">
-        <div className="tv__art-wrap">
-          <Artwork key={np?.artwork_url ?? "none"} url={np?.artwork_url} size={1000} alt={np ? `${np.album ?? np.title} artwork` : ""} className="tv__art" />
-          {paused && np && <div className="tv__paused">Paused</div>}
-        </div>
+      {np ? (
+        <main className="tv__stage">
+          <section className="tv__now" aria-live="polite">
+            <div className="tv__art-wrap">
+              <Crossfade
+                url={artworkAt(np.artwork_url, 1000)}
+                render={(src, onReady) => <ArtImg src={src} alt={`${np.album ?? np.title} artwork`} onReady={onReady} />}
+              />
+              {paused && (
+                <div className="tv__paused" role="status">
+                  <span className="tv__paused-icon" aria-hidden>
+                    <Pause />
+                  </span>
+                  Paused
+                </div>
+              )}
+            </div>
+            <h1 className={cx("tv__title", longTitle && "tv__title--long")}>
+              {np.title}
+              {np.explicit && <SquareLetterE className="explicit" role="img" aria-label="Explicit" />}
+            </h1>
+            <div className="tv__artist">{np.artist}</div>
+            <ProgressBar position={position} duration={np.duration} />
+          </section>
 
-        <section className="tv__info" aria-live="polite">
-          {np ? (
-            <>
-              <h1 className="tv__title">
-                {np.title}
-                {np.explicit && <SquareLetterE size={28} className="explicit" role="img" aria-label="Explicit" />}
-              </h1>
-              <div className="tv__artist">{np.artist}</div>
-              <ProgressBar position={position} duration={np.duration} />
-            </>
-          ) : (
-            <>
-              <h1 className="tv__title">{state ? "Waiting for the first track" : "Tuning in…"}</h1>
-              {state && <div className="tv__artist">Scan the code to request a song.</div>}
-            </>
-          )}
-
-          <div className="upnext">
-            <div className="upnext__heading">Up next</div>
-            {shown.length > 0 ? (
-              <ol className="upnext__list">
-                {shown.map((q) => (
-                  <li key={q.id} className="upnext__item">
-                    <Artwork url={q.track.artwork_url} size={120} className="upnext__art" />
-                    <div className="upnext__text">
-                      <div className="upnext__title truncate">{q.track.title}</div>
-                      <div className="upnext__artist truncate">{q.track.artist}</div>
-                    </div>
-                  </li>
-                ))}
-                {more > 0 && <li className="upnext__more">+{more} more</li>}
-              </ol>
-            ) : state?.up_next_fallback ? (
-              <ol className="upnext__list upnext__list--fallback">
-                <li className="upnext__item">
-                  <span className="upnext__then">then</span>
-                  <Artwork url={state.up_next_fallback.artwork_url} size={120} className="upnext__art" />
-                  <div className="upnext__text">
-                    <div className="upnext__title truncate">{state.up_next_fallback.title}</div>
-                    <div className="upnext__artist truncate">{state.up_next_fallback.artist}</div>
-                  </div>
-                </li>
-              </ol>
-            ) : (
-              <div className="upnext__empty">Nothing queued yet.</div>
+          <aside className="tv__panel" aria-label="Coming up">
+            <RequestCta url={requestUrl} host={host} open={requestsOpen} />
+            <div className="tv__divider" aria-hidden />
+            <ComingUp state={state!} stacked={stacked} />
+          </aside>
+        </main>
+      ) : (
+        <main className="tv__idle-state">
+          <div className="tv__idle-card">
+            <h1 className="tv__idle-title">{state ? "Nothing's playing yet" : "Tuning in…"}</h1>
+            {state && (
+              <>
+                <p className="tv__idle-sub">
+                  {requestsOpen ? "Scan the code to pick the first song." : "Requests are paused for now."}
+                </p>
+                {requestsOpen && (
+                  <Link to="/request" className="tv__idle-qr" aria-label="Request a song">
+                    <QrCode text={requestUrl} className="tv__qr-code" label="QR code: request a song" />
+                    <span className="tv__host">{host}</span>
+                  </Link>
+                )}
+                {requestsOpen && (
+                  <Link to="/request" className="tv__request-btn">
+                    Request a song
+                  </Link>
+                )}
+              </>
             )}
           </div>
-        </section>
-      </main>
+        </main>
+      )}
 
-      <footer className="tv__footer">
-        {!controlsOff ? (
+      <footer className="tv__dock">
+        {!controlsOff && (
           <div
             className={cx("tv-controls", controlsShown && "is-shown", armed && "is-armed")}
             onPointerDownCapture={(e) => {
@@ -244,26 +248,208 @@ export function TvPage() {
             {!sp.status.listening && <span className="tv-controls__hint">Listen on this device</span>}
             <AudioAlert status={sp.status} />
           </div>
-        ) : (
-          <span />
-        )}
-
-        <Link to="/request" className="qr-card" aria-label="Request a song">
-          <QrCode text={requestUrl} className="qr-card__code" label="QR code: request a song" />
-          <div className="qr-card__text">
-            <strong>{state && !state.requests_open ? "Requests are paused" : "Scan to request a song"}</strong>
-            <span>{requestUrl.replace(/^https?:\/\//, "")}</span>
-          </div>
-        </Link>
-        {/* Phones: the viewer is already on a phone, so a plain link replaces the QR code. */}
-        {state?.requests_open !== false && (
-          <Link to="/request" className="tv__request-link">
-            Request a song
-          </Link>
         )}
       </footer>
     </div>
   );
+}
+
+/** QR + "Pick the next song" on TVs; a plain button on phones (the viewer is already on one). */
+function RequestCta({ url, host, open }: { url: string; host: string; open: boolean }) {
+  if (!open) {
+    return (
+      <div className="tv__cta tv__cta--closed">
+        <div className="tv__cta-text">
+          <strong>Requests are paused</strong>
+          <span className="tv__host">Back soon</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <>
+      <Link to="/request" className="tv__cta" aria-label="Request a song">
+        <QrCode text={url} className="tv__qr-code" label="QR code: request a song" />
+        <div className="tv__cta-text">
+          <strong>Pick the next song</strong>
+          <span className="tv__host">{host}</span>
+        </div>
+      </Link>
+      <Link to="/request" className="tv__request-btn">
+        Request a song
+      </Link>
+    </>
+  );
+}
+
+/** "Coming up": as many whole rows as fit (no half rows), then "+N more". */
+function ComingUp({ state, stacked }: { state: State; stacked: boolean }) {
+  const upcoming = state.upcoming;
+  const fallback = state.up_next_fallback;
+  const listRef = useRef<HTMLOListElement>(null);
+  const probeRef = useRef<HTMLLIElement>(null);
+  const moreRef = useRef<HTMLLIElement>(null);
+  const n = Math.min(upcoming.length, stacked ? MAX_ROWS_STACKED : MAX_ROWS);
+  const [fit, setFit] = useState(n);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const probe = probeRef.current;
+    const more = moreRef.current;
+    if (!list || !probe || !more) return;
+    const measure = () => {
+      if (stacked) return setFit(n);
+      const avail = list.clientHeight;
+      const rowH = probe.offsetHeight;
+      const gap = parseFloat(getComputedStyle(list).rowGap) || 0;
+      if (!rowH) return setFit(n);
+      // Everything fits (the "+N more" line is only needed when truncating).
+      if (n * rowH + Math.max(0, n - 1) * gap <= avail + 0.5 && n === upcoming.length) return setFit(n);
+      setFit(Math.max(0, Math.min(n, Math.floor((avail - more.offsetHeight + 0.5) / (rowH + gap)))));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(list);
+    ro.observe(probe);
+    return () => ro.disconnect();
+  }, [n, stacked, upcoming.length]);
+
+  const shown = upcoming.slice(0, Math.min(fit, n));
+  const more = upcoming.length - shown.length;
+
+  return (
+    <div className="cu">
+      <h2 className="cu__heading">Coming up</h2>
+      <ol className={cx("cu__list", upcoming.length === 0 && "cu__list--short")} ref={listRef}>
+        {/* Invisible row used to measure how many rows fit. */}
+        <li className="cu__row cu__probe" ref={probeRef} aria-hidden>
+          <span className="cu__thumb" />
+          <span className="cu__text">
+            <span className="cu__title">Probe</span>
+            <span className="cu__artist">Probe</span>
+          </span>
+        </li>
+        {shown.map((q, i) => (
+          <Row key={q.id} track={q.track} index={i} />
+        ))}
+        {upcoming.length === 0 &&
+          (fallback ? (
+            <Row track={fallback} index={0} dim />
+          ) : (
+            <li className="cu__empty">Nothing queued yet. Request something!</li>
+          ))}
+        <li className={cx("cu__more", more <= 0 && "is-hidden")} ref={moreRef} aria-hidden={more <= 0}>
+          +{Math.max(1, more)} more
+        </li>
+      </ol>
+      {upcoming.length === 0 && fallback && <p className="cu__hint">No requests yet. Scan the code to pick one!</p>}
+    </div>
+  );
+}
+
+function Row({ track, index, dim }: { track: Track; index: number; dim?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const src = artworkAt(track.artwork_url, 160);
+  return (
+    <li className={cx("cu__row", dim && "cu__row--dim")} style={{ animationDelay: `${index * 50}ms` }}>
+      {src && !failed ? (
+        <img className="cu__thumb" src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
+      ) : (
+        <span className="cu__thumb cu__thumb--empty" aria-hidden>
+          <Music />
+        </span>
+      )}
+      <span className="cu__text">
+        <span className="cu__title">{track.title}</span>
+        <span className="cu__artist">{track.artist}</span>
+      </span>
+    </li>
+  );
+}
+
+/**
+ * Stacks one layer per distinct `url`; a new layer fades in over the old one once it has loaded
+ * (onReady), then the older layers are dropped.
+ */
+function Crossfade({ url, render }: { url: string | null; render: (src: string | null, onReady: () => void) => ReactNode }) {
+  const [layers, setLayers] = useState<{ id: number; url: string | null; ready: boolean }[]>(() => [{ id: 0, url, ready: false }]);
+  useEffect(() => {
+    setLayers((ls) => (ls[ls.length - 1].url === url ? ls : [...ls.slice(-2), { id: ls[ls.length - 1].id + 1, url, ready: false }]));
+  }, [url]);
+  const top = layers[layers.length - 1];
+  const prune = (id: number) => setLayers((ls) => (ls.length > 1 ? ls.filter((l) => l.id >= id) : ls));
+  // Older layers go once the new one has finished fading in (animationend); the timer is a
+  // fallback for when no transition runs (e.g. a background tab).
+  useEffect(() => {
+    if (!top.ready || layers.length < 2) return;
+    const t = window.setTimeout(() => prune(top.id), FADE_MS * 3);
+    return () => window.clearTimeout(t);
+  }, [top.id, top.ready, layers.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <>
+      {layers.map((l) => (
+        <div
+          key={l.id}
+          className={cx("fade-layer", l.ready && "is-ready")}
+          onAnimationEnd={(e) => {
+            if (e.target === e.currentTarget && l.ready) prune(l.id);
+          }}
+        >
+          {render(l.url, () => setLayers((ls) => ls.map((x) => (x.id === l.id && !x.ready ? { ...x, ready: true } : x))))}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function ReadyNow({ onReady }: { onReady: () => void }) {
+  useEffect(onReady, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
+
+function ArtImg({ src, alt, onReady }: { src: string | null; alt: string; onReady: () => void }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return (
+      <div className="tv__art tv__art--empty" role="img" aria-label={alt || "No artwork"}>
+        <Music aria-hidden />
+        <ReadyNow onReady={onReady} />
+      </div>
+    );
+  }
+  return (
+    <img
+      className="tv__art"
+      src={src}
+      alt={alt}
+      decoding="async"
+      draggable={false}
+      onLoad={onReady}
+      onError={() => {
+        setFailed(true);
+      }}
+    />
+  );
+}
+
+function useMediaQuery(q: string): boolean {
+  const [m, setM] = useState(() => window.matchMedia(q).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(q);
+    const on = () => setM(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, [q]);
+  return m;
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url.replace(/^https?:\/\//, "");
+  }
 }
 
 function syncLabel(status: SendspinStatus): string {
