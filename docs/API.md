@@ -139,7 +139,7 @@ Each endpoint needs the permission shown (admins have all). 401 if signed out, 4
 | DELETE | `/api/admin/queue/{id}` | `queue_remove` | 409 if the item is already being mixed in |
 | POST | `/api/admin/queue/{id}/move` | `queue_reorder` | `{index: number}` (0-based in `upcoming`); 409 if being mixed in |
 | POST | `/api/admin/player/skip` | `playback_skip` | skips for **every device** |
-| POST | `/api/admin/player/previous` | `playback_skip` | restarts the song, or (within 3 s of its start) goes back to the previous one; the current song is queued right after it. `{ok, result: "restart" \| "previous"}` |
+| POST | `/api/admin/player/previous` | `playback_skip` | restarts the song, or (within 3 s of its start) goes back to the previous one; the current song is queued right after it. Optional body `{at, track_id}`: `at` is the position (seconds) to decide by instead of the live one, e.g. when the button was pressed before a confirmation; with `track_id`, 409 if a different song is playing by now. `{ok, result: "restart" \| "previous"}` |
 | POST | `/api/admin/player/seek` | `playback_skip` | body `{position}` (seconds); jumps within the current song for every device (also while paused) |
 | POST | `/api/admin/player/pause` / `/resume` | `playback_pause` | for every device |
 | GET | `/api/admin/permissions` | any signed-in | `{permissions: {id, label, description, group}[]}` catalog for the UI |

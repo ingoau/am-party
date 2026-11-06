@@ -767,13 +767,17 @@ class Party:
         track = await self.get_track(track_id)
         await self._insert_queue(track, "admin", position, user=user)
 
-    async def previous(self) -> str:
+    async def previous(self, at: float | None = None, track_id: str | None = None) -> str:
         """Restart the current song, or go back to the one before it.
 
         Within PREVIOUS_RESTART seconds of a song's start this goes back: the previous
         song and then the current one are put at the front of the queue, so "skip"
         afterwards returns to where the party was. Their history rows are dropped
         (they are logged again when they play), so repeated presses keep going back.
+        `at` is the song position the admin saw when they pressed the button; it decides
+        between the two instead of the live position, so a confirmation dialog in between
+        doesn't turn "go back" into "restart". With `track_id`, a different song playing
+        by now is a 409 rather than acting on the wrong one.
         Returns "restart" or "previous".
         """
         eng = self.engine
@@ -781,7 +785,10 @@ class Party:
             raise ApiError(409, "Nothing is playing")
         rows = await self.db.fetchall("SELECT * FROM history ORDER BY id DESC LIMIT 2")
         cur = eng.now.candidate
-        if eng.position() > PREVIOUS_RESTART or len(rows) < 2 or rows[0]["track_id"] != cur.track.id:
+        if track_id is not None and track_id != cur.track.id:
+            raise ApiError(409, "The song changed. Try again.")
+        pos = eng.position() if at is None else at
+        if pos > PREVIOUS_RESTART or len(rows) < 2 or rows[0]["track_id"] != cur.track.id:
             eng.seek(0)
             self.changed()
             return "restart"

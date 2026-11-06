@@ -434,7 +434,14 @@ async def player_action(request: web.Request) -> web.Response:
     if action == "skip":
         e.engine.skip()
     elif action == "previous":
-        result = await e.party.previous()
+        data = await body(request)
+        at = data.get("at")
+        if at is not None and (isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at)):
+            raise ApiError(400, "at must be a number of seconds")
+        track_id = data.get("track_id")
+        if track_id is not None and not isinstance(track_id, str):
+            raise ApiError(400, "track_id must be a string")
+        result = await e.party.previous(None if at is None else float(at), track_id)
         return web.json_response({"ok": True, "result": result})
     elif action == "seek":
         data = await body(request)
