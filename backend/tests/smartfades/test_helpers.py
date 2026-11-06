@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_helpers.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_helpers.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for smart fades helper functions."""
 
@@ -10,7 +10,7 @@ import itertools
 import numpy as np
 import pytest
 
-from encore.smartfades.mixing.helpers import (
+from am_party.smartfades.mixing.helpers import (
     db_ramp,
     detect_effective_audio_end,
     detect_groove_entry,

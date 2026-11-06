@@ -50,7 +50,7 @@ export function RequestPage() {
   const [mine, setMine] = useState<SongRequest[]>([]);
   const [pendingTrack, setPendingTrack] = useState<string | null>(null);
 
-  useDocumentTitle(`Request a song · ${state?.party_name || "Encore"}`);
+  useDocumentTitle(`Request a song · ${state?.party_name || "am-party"}`);
 
   // Debounced search with abort of stale requests.
   useEffect(() => {
@@ -181,7 +181,7 @@ export function RequestPage() {
   return (
     <div className="req">
       <header className="req__header">
-        <h1 className="req__party">{state?.party_name || "Encore"}</h1>
+        <h1 className="req__party">{state?.party_name || "am-party"}</h1>
       </header>
 
       {np && (

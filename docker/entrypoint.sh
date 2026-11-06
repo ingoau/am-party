@@ -1,5 +1,5 @@
 #!/bin/sh
-# Encore container entrypoint.
+# am-party container entrypoint.
 #
 # Docker creates a missing bind-mount source (./data) owned by root, which the
 # unprivileged app user (uid 1000) can't write to. When started as root we fix the
@@ -8,7 +8,7 @@
 # we only check that the data dir is writable and fail with an actionable message.
 set -eu
 
-DATA_DIR="${ENCORE_DATA_DIR:-/data}"
+DATA_DIR="${AM_PARTY_DATA_DIR:-/data}"
 APP_UID=1000
 APP_GID=1000
 
@@ -21,13 +21,13 @@ fail() {
 if [ "$(id -u)" = "0" ]; then
     mkdir -p "$DATA_DIR"
     if [ "$(stat -c %u "$DATA_DIR")" = "0" ]; then
-        echo "encore: $DATA_DIR is owned by root, handing it to uid $APP_UID" >&2
+        echo "am_party: $DATA_DIR is owned by root, handing it to uid $APP_UID" >&2
         chown -R "$APP_UID:$APP_GID" "$DATA_DIR"
     fi
     if ! setpriv --reuid="$APP_UID" --regid="$APP_GID" --init-groups test -w "$DATA_DIR"; then
         fail "$DATA_DIR is not writable by uid $APP_UID (owned by uid $(stat -c %u "$DATA_DIR"))." "$APP_UID:$APP_GID"
     fi
-    exec setpriv --reuid="$APP_UID" --regid="$APP_GID" --init-groups env HOME=/home/encore "$@"
+    exec setpriv --reuid="$APP_UID" --regid="$APP_GID" --init-groups env HOME=/home/am_party "$@"
 fi
 
 if [ ! -w "$DATA_DIR" ]; then

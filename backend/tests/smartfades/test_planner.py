@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_planner.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_planner.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for SmartCrossFadePlanner — the pure decision step of smart fades."""
 
@@ -12,10 +12,10 @@ import math
 import numpy as np
 import pytest
 
-from encore.smartfades.mixing.bands import window_fraction
-from encore.smartfades.mixing.filters import ShelfType
-from encore.smartfades.mixing.helpers import SMART_CROSSFADE_DURATION
-from encore.smartfades.mixing.models import (
+from am_party.smartfades.mixing.bands import window_fraction
+from am_party.smartfades.mixing.filters import ShelfType
+from am_party.smartfades.mixing.helpers import SMART_CROSSFADE_DURATION
+from am_party.smartfades.mixing.models import (
     EqPlan,
     ShelfSchedule,
     SmartFadeNotApplicable,
@@ -23,17 +23,17 @@ from encore.smartfades.mixing.models import (
     TransitionStrategy,
     TransitionTier,
 )
-from encore.smartfades.mixing.planner import SmartCrossFadePlanner, assembly
-from encore.smartfades.mixing.planner.assembly import PlanAssembler
-from encore.smartfades.mixing.planner.candidates import (
+from am_party.smartfades.mixing.planner import SmartCrossFadePlanner, assembly
+from am_party.smartfades.mixing.planner.assembly import PlanAssembler
+from am_party.smartfades.mixing.planner.candidates import (
     CandidateFactory,
     CandidateSpec,
 )
-from encore.smartfades.mixing.planner.context import (
+from am_party.smartfades.mixing.planner.context import (
     TransitionContext,
     build_transition_context,
 )
-from encore.smartfades.audio_analysis import AudioAnalysisData
+from am_party.smartfades.audio_analysis import AudioAnalysisData
 from .conftest import _analysis_with_bands
 
 LOGGER = logging.getLogger(__name__)

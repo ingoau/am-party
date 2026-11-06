@@ -8,13 +8,13 @@ import re
 
 import pytest
 
-from encore.providers.apple_music import (
+from am_party.providers.apple_music import (
     AppleMusicClient,
     developer_token_expiry,
     is_plausible_user_token,
     render_musickit_auth_page,
 )
-from encore.providers.apple_music.parsers import (
+from am_party.providers.apple_music.parsers import (
     format_artwork_url,
     is_available,
     key_id_from_uri,
@@ -234,13 +234,13 @@ def test_is_plausible_user_token():
 
 
 def test_render_auth_page_escapes_config():
-    page = render_musickit_auth_page("tok</script><b>", "/admin/apple-music/callback", app_name="Encore <x>")
+    page = render_musickit_auth_page("tok</script><b>", "/admin/apple-music/callback", app_name="am-party <x>")
     assert "js-cdn.music.apple.com/musickit/v3/musickit.js" in page
     assert "</script><b>" not in page
-    m = re.search(r"const ENCORE_CONFIG = Object\.freeze\((.*?)\);", page)
+    m = re.search(r"const AM_PARTY_CONFIG = Object\.freeze\((.*?)\);", page)
     assert m
     cfg = json.loads(m.group(1))
     assert cfg["developer_token"] == "tok</script><b>"
     assert cfg["callback_url"] == "/admin/apple-music/callback"
-    assert "Encore &lt;x&gt;" in page
-    assert "/*__ENCORE" not in page
+    assert "am-party &lt;x&gt;" in page
+    assert "/*__AM_PARTY" not in page

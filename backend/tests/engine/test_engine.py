@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from encore.models import BYTES_PER_SECOND, StreamInfo, Track
-from encore.player.engine import Candidate, Engine
-from encore.player.prepare import TrackPreparer
+from am_party.models import BYTES_PER_SECOND, StreamInfo, Track
+from am_party.player.engine import Candidate, Engine
+from am_party.player.prepare import TrackPreparer
 
 LEVELS = {"a": 0.1, "b": 0.2, "c": 0.3, "d": 0.4}
 SECONDS = 10

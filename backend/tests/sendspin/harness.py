@@ -22,8 +22,8 @@ from aiosendspin.models.types import AudioCodec, Roles
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.trust_store import InMemoryClientPairingStore
 
-from encore.models import BYTES_PER_SECOND, SAMPLE_RATE
-from encore.player.sendspin_out import SendspinOutput
+from am_party.models import BYTES_PER_SECOND, SAMPLE_RATE
+from am_party.player.sendspin_out import SendspinOutput
 
 
 def free_port() -> int:
@@ -63,7 +63,7 @@ async def make_client(name: str, url: str, session: aiohttp.ClientSession) -> Cl
         name,
         [Roles.PLAYER, Roles.METADATA, Roles.CONTROLLER],
         pairing_store=store,
-        device_info=DeviceInfo(product_name="encore-test", manufacturer="encore"),
+        device_info=DeviceInfo(product_name="am_party-test", manufacturer="am_party"),
         player_support=ClientHelloPlayerSupport(
             supported_formats=[
                 SupportedAudioFormat(
@@ -100,7 +100,7 @@ class Harness:
 
     async def __aenter__(self) -> Harness:
         self.session = aiohttp.ClientSession()
-        self.out = SendspinOutput(self.session, name="Encore Test", port=0)
+        self.out = SendspinOutput(self.session, name="am-party Test", port=0)
         self.out.buffer_ahead = self.buffer_ahead
         self.out.on_listeners_changed = self.counts.append
         await self.out.start()

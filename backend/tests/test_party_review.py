@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
-from encore.db import Database
-from encore.models import Track
-from encore.party import ApiError, Hub, Party
+from am_party.db import Database
+from am_party.models import Track
+from am_party.party import ApiError, Hub, Party
 
 
 async def make_party(tmp_path: Path) -> Party:
@@ -64,10 +64,10 @@ async def test_good_settings(tmp_path: Path) -> None:
         {"crossfade_duration": 12, "requests_open": False, "party_name": None, "max_pending_per_guest": 1}
     )
     assert s["crossfade_duration"] == 12 and s["requests_open"] is False
-    assert s["party_name"] == "Encore"  # null -> default, not "None"
+    assert s["party_name"] == "Party"  # null -> default, not "None"
     assert s["max_pending_per_guest"] == 1
     s = await p.update_settings({"party_name": "  "})
-    assert s["party_name"] == "Encore"
+    assert s["party_name"] == "Party"
     await p.db.close()
 
 
@@ -96,7 +96,7 @@ async def test_approve_after_withdraw_is_noop(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_decide_withdrawn_request_conflicts(tmp_path: Path) -> None:
-    from encore.auth import User
+    from am_party.auth import User
 
     p = await make_party(tmp_path)
     req = await p.create_request("g1", "0")
@@ -175,8 +175,8 @@ async def test_concurrent_moves_are_atomic(tmp_path: Path) -> None:
 # -- history ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_history_is_pruned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import encore.party as party_mod
-    from encore.player.engine import Candidate, NowPlaying
+    import am_party.party as party_mod
+    from am_party.player.engine import Candidate, NowPlaying
 
     monkeypatch.setattr(party_mod, "HISTORY_KEEP", 5)
     p = await make_party(tmp_path)
@@ -275,7 +275,7 @@ class _WS:
 async def test_hub_send_all_concurrent_and_drops_dead(monkeypatch: pytest.MonkeyPatch) -> None:
     import time
 
-    import encore.party as party_mod
+    import am_party.party as party_mod
 
     monkeypatch.setattr(party_mod, "WS_SEND_TIMEOUT", 0.2)
     hub = Hub()
@@ -333,7 +333,7 @@ async def test_move_index_validation(tmp_path: Path) -> None:
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
-    from encore import api
+    from am_party import api
 
     p = await make_party(tmp_path)
     for i in range(2):
@@ -348,7 +348,7 @@ async def test_move_index_validation(tmp_path: Path) -> None:
         auth = Auth()
 
     app = web.Application(middlewares=[api.error_middleware])
-    app["encore"] = Enc()
+    app["am_party"] = Enc()
     app.add_routes(api.routes)
     hdr = {"Sec-Fetch-Site": "same-origin"}
     async with TestClient(TestServer(app)) as client:

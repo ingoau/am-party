@@ -7,7 +7,7 @@ export const can = (u: User | null | undefined, p: Permission) => !!u && (u.is_a
 export const canAny = (u: User | null | undefined, ps: readonly Permission[]) => ps.some((p) => can(u, p));
 export const canQueueTab = (u: User | null | undefined) => canAny(u, QUEUE_PERMISSIONS);
 
-/** Used until /api/admin/permissions answers (or if it fails). Mirrors backend/encore/auth.py. */
+/** Used until /api/admin/permissions answers (or if it fails). Mirrors backend/am_party/auth.py. */
 export const FALLBACK_CATALOG: PermissionInfo[] = [
   { id: "approve_requests", label: "Approve requests", description: "Approve or reject songs guests request", group: "Requests" },
   { id: "queue_add", label: "Add to queue", description: "Add songs straight to the queue without approval", group: "Queue" },

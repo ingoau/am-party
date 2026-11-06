@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Backend (FastAPI/etc.) runs on :8930 in dev. Override with ENCORE_BACKEND=http://host:port.
-const backend = process.env.ENCORE_BACKEND ?? "http://localhost:8930";
+// Backend (FastAPI/etc.) runs on :8930 in dev. Override with AM_PARTY_BACKEND=http://host:port.
+const backend = process.env.AM_PARTY_BACKEND ?? "http://localhost:8930";
 
 export default defineConfig({
   plugins: [react()],

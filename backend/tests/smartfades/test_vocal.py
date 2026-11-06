@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_vocal.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_vocal.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for the 1800-bin vocal-activity contract and vocal-collision math."""
 
@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from encore.smartfades.mixing.vocal import (
+from am_party.smartfades.mixing.vocal import (
     VocalMask,
     VocalTimeline,
     build_vocal_windows,
@@ -17,7 +17,7 @@ from encore.smartfades.mixing.vocal import (
     merge_windows,
     parse_vocal_probabilities,
 )
-from encore.smartfades.audio_analysis import AudioAnalysisData
+from am_party.smartfades.audio_analysis import AudioAnalysisData
 
 
 def _analysis(vocal_activity: object, duration: float | None = 240.0) -> AudioAnalysisData:

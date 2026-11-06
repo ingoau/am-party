@@ -1,8 +1,8 @@
-"""End-to-end tests for encore.player.sendspin_out using the aiosendspin reference client.
+"""End-to-end tests for am_party.player.sendspin_out using the aiosendspin reference client.
 
 Run (from backend/):
-  docker build -f tests/sendspin/Dockerfile -t encore-sendspin-test:local .
-  docker run --rm --label owner=encore -v "$PWD":/app encore-sendspin-test:local \
+  docker build -f tests/sendspin/Dockerfile -t am_party-sendspin-test:local .
+  docker run --rm --label owner=am_party -v "$PWD":/app am_party-sendspin-test:local \
       python -m pytest -q tests/sendspin
 """
 
@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from encore.player.sendspin_out import ANCHOR_CLIENT_ID
+from am_party.player.sendspin_out import ANCHOR_CLIENT_ID
 
 from .harness import Harness, make_client, wait_for
 
@@ -147,7 +147,7 @@ async def test_native_listener_port() -> None:
     """With port != 0 the library's own listener also serves ws://host:port/sendspin."""
     import aiohttp
 
-    from encore.player.sendspin_out import SendspinOutput
+    from am_party.player.sendspin_out import SendspinOutput
 
     from .harness import free_port
 

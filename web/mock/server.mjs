@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Encore mock backend — a dependency-free dev tool that implements docs/API.md with fake,
+// am-party mock backend — a dependency-free dev tool that implements docs/API.md with fake,
 // in-memory data and serves web/dist with SPA fallback. No audio (/sendspin is not mocked).
 //
 //   npm run build && PORT=8930 node mock/server.mjs
@@ -109,7 +109,7 @@ for (const r of requests) {
   const item = upcoming.find((u) => u.track.id === r.track.id && u.source === "request" && u.request_id == null);
   if (item) { item.request_id = r.id; r.queue_item_id = item.id; }
 }
-// ---------- Permissions (mirrors backend/encore/auth.py) ----------
+// ---------- Permissions (mirrors backend/am_party/auth.py) ----------
 const PERMISSIONS = [
   { id: "approve_requests", label: "Approve requests", description: "Approve or reject songs guests request", group: "Requests" },
   { id: "queue_add", label: "Add to queue", description: "Add songs straight to the queue without approval", group: "Queue" },
@@ -515,7 +515,7 @@ const server = http.createServer(async (req, res) => {
       smart_fades: { available: false, error: "analysis model not installed" },
       fallback: { tracks: TRACKS.length, error: null },
       listeners: 4,
-      // Same keys as backend/encore/player/engine.py status().
+      // Same keys as backend/am_party/player/engine.py status().
       engine: {
         paused,
         now_playing: nowPlaying?.track.title ?? null,
@@ -584,4 +584,4 @@ server.on("upgrade", (req, sock) => {
   sock.on("error", () => sockets.delete(sock));
 });
 
-server.listen(PORT, () => console.log(`Encore mock backend on http://localhost:${PORT} (serving ${DIST})`));
+server.listen(PORT, () => console.log(`am-party mock backend on http://localhost:${PORT} (serving ${DIST})`));

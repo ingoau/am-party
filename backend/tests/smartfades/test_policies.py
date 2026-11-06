@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_policies.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_policies.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for the candidate scoring policies: rejections and soft penalties."""
 
@@ -10,14 +10,14 @@ import dataclasses
 import numpy as np
 import pytest
 
-from encore.smartfades.mixing.models import (
+from am_party.smartfades.mixing.models import (
     Deck,
     TransitionTier,
 )
-from encore.smartfades.mixing.planner.context import (
+from am_party.smartfades.mixing.planner.context import (
     TransitionContext,
 )
-from encore.smartfades.mixing.planner.policies import (
+from am_party.smartfades.mixing.planner.policies import (
     AnchorAlignmentPolicy,
     AudibleTrimPolicy,
     DeadAirPolicy,
@@ -27,13 +27,13 @@ from encore.smartfades.mixing.planner.policies import (
     VocalTruncationPolicy,
     default_policies,
 )
-from encore.smartfades.mixing.vocal import (
+from am_party.smartfades.mixing.vocal import (
     COLLISION_SECONDS_LIMIT,
     SHORT_FADE_SECONDS,
     WEIGHTED_COLLISION_LIMIT,
     VocalMask,
 )
-from encore.smartfades.audio_analysis import AudioAnalysisData
+from am_party.smartfades.audio_analysis import AudioAnalysisData
 from .conftest import build_test_candidate as _candidate
 
 

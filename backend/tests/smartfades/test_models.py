@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_models.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_models.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for the smart-fades transition plan value objects."""
 
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from encore.smartfades.mixing.models import (
+from am_party.smartfades.mixing.models import (
     EqPlan,
     TempoPlan,
     TransitionPlan,

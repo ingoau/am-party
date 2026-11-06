@@ -1,4 +1,4 @@
-# Encore HTTP API
+# am-party HTTP API
 
 All JSON. Times are unix seconds (float) in **server time**; every state payload includes
 `server_time` so clients can compute their clock offset.
@@ -91,28 +91,28 @@ These are additive: a well-behaved same-origin client (the SPA) is unaffected.
 
 - **JSON bodies** must be sent with `Content-Type: application/json`, otherwise `415 {error}`.
 - **CSRF**: every POST/PUT/PATCH/DELETE must carry an `Origin` that exactly equals the
-  `ENCORE_PUBLIC_URL` origin, or the request's own `scheme://host` when that host differs
+  `AM_PARTY_PUBLIC_URL` origin, or the request's own `scheme://host` when that host differs
   (LAN access by IP). Without an `Origin` header, `Sec-Fetch-Site` must be `same-origin`
   or `none`. Otherwise `403 {error}`. (Browsers send these automatically for `fetch`.)
 - **`track_id`** (POST `/api/requests`, POST `/api/admin/queue`) must be an Apple Music id:
   digits (`^[0-9]{1,20}$`) or a library id (`^[ailp]\.[A-Za-z0-9]{1,64}$`), else `400`.
   Numbers are accepted and converted to strings.
-- **Guest cookie** (`encore_guest`) is now `"<id>.<signature>"`, issued by the server.
+- **Guest cookie** (`am_party_guest`) is now `"<id>.<signature>"`, issued by the server.
   Unsigned/forged values are replaced by a new id (so a pre-upgrade guest starts fresh).
 - **Rate limits** (all `429 {error}`): search per guest (30/min), per client IP
-  (`ENCORE_IP_SEARCHES_PER_MINUTE`, default 120/min) and in total (600/min); requests per
+  (`AM_PARTY_IP_SEARCHES_PER_MINUTE`, default 120/min) and in total (600/min); requests per
   guest (`max_pending_per_guest`, `request_cooldown_seconds`), per IP
-  (`ENCORE_IP_MAX_PENDING` pending, default 20; 2 s cooldown) and in total (200 pending).
+  (`AM_PARTY_IP_MAX_PENDING` pending, default 20; 2 s cooldown) and in total (200 pending).
 - **`/api/ws`**: messages over 4 KiB close the socket; a cross-site `Origin` gets `403`; more
   than 100 sockets per IP or 500 in total get `429` before the upgrade. `ping` is answered at
   most twice per second (extra pings are ignored, no `pong`). On `POST /auth/logout` the
   session's sockets are closed with code `4001` (reconnect to continue anonymously).
 - **`/sendspin`**: cross-site `Origin` → `403`; more than 50 connections per IP or
-  `ENCORE_MAX_LISTENERS` (default 100) in total → `503`. Clients claiming a reserved
+  `AM_PARTY_MAX_LISTENERS` (default 100) in total → `503`. Clients claiming a reserved
   client id (the internal party anchor) are disconnected during the handshake.
 - **`/auth/login?next=`** only accepts `/admin` and `/admin/...` paths; anything else
   falls back to `/admin`. `/auth/callback` returns an HTML `403` page when the account is
-  not allowed by `ENCORE_ALLOWED_EMAILS`/`ENCORE_ALLOWED_DOMAINS`, and `400` if the
+  not allowed by `AM_PARTY_ALLOWED_EMAILS`/`AM_PARTY_ALLOWED_DOMAINS`, and `400` if the
   provider returned no `id_token`.
 - Sessions expire after 7 days without use (30 days at most).
 

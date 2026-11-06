@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_renderer.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_renderer.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for TransitionRenderer — plan to filter-chain + timing."""
 
@@ -8,10 +8,10 @@ from __future__ import annotations
 import logging
 
 import pytest
-from encore.smartfades.pcm import ContentType
-from encore.smartfades.pcm import AudioFormat
+from am_party.smartfades.pcm import ContentType
+from am_party.smartfades.pcm import AudioFormat
 
-from encore.smartfades.mixing.filters import (
+from am_party.smartfades.mixing.filters import (
     FadeInTrimFilter,
     FadeOutTrimFilter,
     GradualTimeStretchFilter,
@@ -20,7 +20,7 @@ from encore.smartfades.mixing.filters import (
     ShelfType,
     StreamingCrossfadeFilter,
 )
-from encore.smartfades.mixing.models import (
+from am_party.smartfades.mixing.models import (
     EqPlan,
     FadeOutTrim,
     ShelfSchedule,
@@ -28,7 +28,7 @@ from encore.smartfades.mixing.models import (
     TransitionPlan,
     TransitionTier,
 )
-from encore.smartfades.mixing.renderer import TransitionRenderer
+from am_party.smartfades.mixing.renderer import TransitionRenderer
 
 LOGGER = logging.getLogger(__name__)
 PCM = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2)

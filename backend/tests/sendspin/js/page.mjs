@@ -6,10 +6,10 @@ const states = [];
 const player = new SendspinPlayer({
   baseUrl: params.get("base") ?? location.origin, // ws(s)://<host>/sendspin is derived from this
   clientName: params.get("name") ?? "browser",
-  productName: "Encore",
+  productName: "am-party",
   onStateChange: (s) => states.push({ t: Date.now(), playing: s.isPlaying, ps: s.playerState }),
 });
-window.encore = {
+window.am-party = {
   player,
   states,
   async start() { await player.unlock(); await player.connect(); },
@@ -22,4 +22,4 @@ window.encore = {
     };
   },
 };
-document.getElementById("go").onclick = () => window.encore.start();
+document.getElementById("go").onclick = () => window.am-party.start();

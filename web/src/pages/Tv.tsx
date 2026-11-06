@@ -98,7 +98,7 @@ export function TvPage() {
   }, []);
 
   // The party name lives in the browser title only (the screen itself stays uncluttered).
-  const party = state?.party_name || "Encore";
+  const party = state?.party_name || "am-party";
   useDocumentTitle(np ? `${np.title} · ${np.artist} · ${party}` : party);
 
   const stacked = useMediaQuery(STACKED_MQ);

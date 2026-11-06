@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from encore.models import BYTES_PER_SECOND
+from am_party.models import BYTES_PER_SECOND
 from tests.engine.test_engine import FakeOutput, build, levels, media, wait_for  # noqa: F401
 
 
@@ -186,7 +186,7 @@ async def test_stop_awaits_tasks(media) -> None:  # noqa: ANN001
 
 
 def _fake_worker():  # noqa: ANN202
-    from encore.smartfades.worker import AnalysisWorker
+    from am_party.smartfades.worker import AnalysisWorker
 
     w = AnalysisWorker()
     w._started = True

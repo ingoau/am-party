@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/conftest.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/conftest.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Shared test helpers for the smart_fades test suite."""
 
@@ -9,16 +9,16 @@ from typing import cast
 
 import numpy as np
 
-from encore.smartfades.mixing.models import (
+from am_party.smartfades.mixing.models import (
     PlanMetrics,
     TransitionPlan,
     TransitionTier,
 )
-from encore.smartfades.mixing.planner.candidates import (
+from am_party.smartfades.mixing.planner.candidates import (
     Candidate,
     CandidateSpec,
 )
-from encore.smartfades.audio_analysis import AudioAnalysisData
+from am_party.smartfades.audio_analysis import AudioAnalysisData
 
 
 def build_test_candidate(  # noqa: PLR0913

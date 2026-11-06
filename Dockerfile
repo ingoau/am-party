@@ -31,28 +31,28 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH=/opt/venv/bin:$PATH \
     TORCH_HOME=/opt/torch \
-    ENCORE_DATA_DIR=/data \
-    ENCORE_STATIC_DIR=/app/static
+    AM_PARTY_DATA_DIR=/data \
+    AM_PARTY_STATIC_DIR=/app/static
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/torch /opt/torch
 WORKDIR /app
-RUN useradd --uid 1000 --create-home encore && mkdir -p /data && chown encore:encore /data
-COPY docker/entrypoint.sh /usr/local/bin/encore-entrypoint
-COPY backend/encore ./encore
+RUN useradd --uid 1000 --create-home am_party && mkdir -p /data && chown am_party:am_party /data
+COPY docker/entrypoint.sh /usr/local/bin/am-party-entrypoint
+COPY backend/am_party ./am_party
 COPY --from=web /web/dist ./static
 EXPOSE 8930
 # Starts as root only to fix ownership of a root-owned /data, then drops to uid 1000.
-ENTRYPOINT ["encore-entrypoint"]
+ENTRYPOINT ["am-party-entrypoint"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8930/api/state', timeout=4)" || exit 1
-CMD ["python", "-m", "encore"]
+CMD ["python", "-m", "am_party"]
 
-# Test image: docker build --target test -t encore:test . && docker run --rm encore:test
+# Test image: docker build --target test -t am_party:test . && docker run --rm am_party:test
 FROM runtime AS test
 COPY backend/requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt && rm /tmp/requirements-dev.txt
 COPY backend/tests ./tests
-RUN chown -R encore:encore /app/tests
+RUN chown -R am_party:am_party /app/tests
 ENV PYTHONPYCACHEPREFIX=/tmp/pyc
 CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-W", "ignore::DeprecationWarning", "tests"]
 

@@ -15,8 +15,8 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from encore import auth as auth_mod
-from encore.api import (
+from am_party import auth as auth_mod
+from am_party.api import (
     CSP,
     body,
     csrf_check,
@@ -24,7 +24,7 @@ from encore.api import (
     origin_allowed,
     track_id_param,
 )
-from encore.auth import (
+from am_party.auth import (
     GUEST_COOKIE,
     AuthManager,
     check_azp,
@@ -36,11 +36,11 @@ from encore.auth import (
     safe_next,
     sign_in_allowed,
 )
-from encore.config import Config, _email_set, _trusted_proxy
-from encore.db import Database
-from encore.models import Track
-from encore.party import ApiError, Hub, Party
-from encore.security import ConnectionCounter, SlidingWindow, TTLCache, valid_track_id
+from am_party.config import Config, _email_set, _trusted_proxy
+from am_party.db import Database
+from am_party.models import Track
+from am_party.party import ApiError, Hub, Party
+from am_party.security import ConnectionCounter, SlidingWindow, TTLCache, valid_track_id
 
 SECRET = "test-secret"
 
@@ -53,7 +53,7 @@ def make_config(**kw: Any) -> Config:
         public_url="https://party.example.com",
         session_secret=SECRET,
         oidc_issuer="https://idp.example.com",
-        oidc_client_id="encore",
+        oidc_client_id="am_party",
         oidc_client_secret=None,
         oidc_scopes="openid",
         oidc_name="SSO",
@@ -74,7 +74,7 @@ def mk_request(
     remote: str = "203.0.113.9",
 ) -> web.Request:
     app = web.Application()
-    app["encore"] = SimpleNamespace(config=config or make_config())
+    app["am_party"] = SimpleNamespace(config=config or make_config())
     req = make_mocked_request(method, path, headers=headers or {}, app=app)
     return req.clone(remote=remote)
 
@@ -229,7 +229,7 @@ async def test_requests_ip_cooldown(party: Party) -> None:
 
 @pytest.mark.asyncio
 async def test_requests_global_pending_ceiling(party: Party, monkeypatch: pytest.MonkeyPatch) -> None:
-    import encore.party as party_mod
+    import am_party.party as party_mod
 
     monkeypatch.setattr(party_mod, "MAX_PENDING_TOTAL", 2)
     p = party
@@ -422,7 +422,7 @@ async def test_unclaimed_warning(auth: AuthManager, caplog: pytest.LogCaptureFix
     am = auth
     with caplog.at_level("WARNING"):
         await am.warn_if_unclaimed()
-    assert "ENCORE_ADMIN_EMAILS" in caplog.text
+    assert "AM_PARTY_ADMIN_EMAILS" in caplog.text
 
 
 # --------------------------------------------------------------------------- oidc
@@ -437,12 +437,12 @@ def test_id_token_algorithms() -> None:
 
 
 def test_check_azp() -> None:
-    check_azp({"aud": "encore"}, "encore")
-    check_azp({"aud": ["encore", "other"], "azp": "encore"}, "encore")
+    check_azp({"aud": "am_party"}, "am_party")
+    check_azp({"aud": ["am_party", "other"], "azp": "am_party"}, "am_party")
     with pytest.raises(jwt.InvalidAudienceError):
-        check_azp({"aud": ["encore", "other"]}, "encore")
+        check_azp({"aud": ["am_party", "other"]}, "am_party")
     with pytest.raises(jwt.InvalidAudienceError):
-        check_azp({"aud": "encore", "azp": "other"}, "encore")
+        check_azp({"aud": "am_party", "azp": "other"}, "am_party")
 
 
 @pytest.mark.asyncio
@@ -493,8 +493,8 @@ async def test_party_get_track_validates(party: Party) -> None:
 
 @pytest.mark.asyncio
 async def test_apple_client_rejects_bad_ids() -> None:
-    from encore.models import ProviderError
-    from encore.providers.apple_music.client import _require_track_id
+    from am_party.models import ProviderError
+    from am_party.providers.apple_music.client import _require_track_id
 
     _require_track_id("123")
     with pytest.raises(ProviderError):
@@ -525,7 +525,7 @@ def test_sendspin_reserved_client_id() -> None:
 
     from aiosendspin.server.compliance import ClientComplianceError
 
-    from encore.player.sendspin_out import ANCHOR_CLIENT_ID, _TrustAllPairingStore
+    from am_party.player.sendspin_out import ANCHOR_CLIENT_ID, _TrustAllPairingStore
 
     store = _TrustAllPairingStore()
     with pytest.raises(ClientComplianceError):

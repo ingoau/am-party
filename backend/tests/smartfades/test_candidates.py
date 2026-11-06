@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_candidates.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_candidates.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for the smart fades candidate factory."""
 
@@ -10,18 +10,18 @@ import logging
 import numpy as np
 import pytest
 
-from encore.smartfades.mixing.models import TransitionTier
-from encore.smartfades.mixing.planner.candidates import (
+from am_party.smartfades.mixing.models import TransitionTier
+from am_party.smartfades.mixing.planner.candidates import (
     Candidate,
     CandidateFactory,
     CandidateSpec,
     bars_ladder,
 )
-from encore.smartfades.mixing.planner.context import (
+from am_party.smartfades.mixing.planner.context import (
     TransitionContext,
     build_transition_context,
 )
-from encore.smartfades.audio_analysis import AudioAnalysisData
+from am_party.smartfades.audio_analysis import AudioAnalysisData
 
 from .conftest import _analysis_with_bands
 

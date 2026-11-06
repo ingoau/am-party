@@ -1,22 +1,22 @@
 services:
-  encore:
+  am-party:
     build:
       context: .
       target: app
-    image: encore:local
-    container_name: encore
+    image: am-party:local
+    container_name: am-party
     restart: unless-stopped
     init: true
     ports:
-      - "${ENCORE_HOST_PORT:-8930}:8930"
-      # Native Sendspin LAN listener (only if ENCORE_SENDSPIN_PORT is set):
+      - "${AM_PARTY_HOST_PORT:-8930}:8930"
+      # Native Sendspin LAN listener (only if AM_PARTY_SENDSPIN_PORT is set):
       # - "8927:8927"
     env_file:
       - path: .env
         required: false
     environment:
-      ENCORE_DATA_DIR: /data
-      ENCORE_SECRETS_DIR: /run/secrets
+      AM_PARTY_DATA_DIR: /data
+      AM_PARTY_SECRETS_DIR: /run/secrets
     volumes:
       # Create it first (mkdir -p data secrets) so it is owned by you; a root-owned
       # ./data is handed to uid 1000 by the entrypoint.
@@ -33,4 +33,4 @@ services:
     # mem_limit: 3g
     # cpus: 2
     labels:
-      owner: encore
+      owner: am-party

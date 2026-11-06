@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_generators.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_generators.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for the smart fades candidate generators."""
 
@@ -12,9 +12,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from encore.smartfades.mixing.bands import build_band_profile
-from encore.smartfades.mixing.models import Deck, TransitionTier
-from encore.smartfades.mixing.planner.candidates import (
+from am_party.smartfades.mixing.bands import build_band_profile
+from am_party.smartfades.mixing.models import Deck, TransitionTier
+from am_party.smartfades.mixing.planner.candidates import (
     _INSTRUMENTAL_BLEND_BARS,
     CodaAnchorGenerator,
     EnergyLadderGenerator,
@@ -24,13 +24,13 @@ from encore.smartfades.mixing.planner.candidates import (
     _entry_options,
     default_generators,
 )
-from encore.smartfades.mixing.planner.context import (
+from am_party.smartfades.mixing.planner.context import (
     TransitionContext,
     build_transition_context,
 )
-from encore.smartfades.mixing.structure import CodaZone
-from encore.smartfades.mixing.vocal import VocalMask
-from encore.smartfades.audio_analysis import AudioAnalysisData
+from am_party.smartfades.mixing.structure import CodaZone
+from am_party.smartfades.mixing.vocal import VocalMask
+from am_party.smartfades.audio_analysis import AudioAnalysisData
 
 from .conftest import _analysis_with_bands
 

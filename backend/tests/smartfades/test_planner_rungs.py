@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_planner_rungs.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_planner_rungs.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for the candidate generators' rung emission."""
 
@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import logging
 
-from encore.smartfades.mixing.models import (
+from am_party.smartfades.mixing.models import (
     TransitionStrategy,
     TransitionTier,
 )
-from encore.smartfades.mixing.planner.candidates import (
+from am_party.smartfades.mixing.planner.candidates import (
     _LAZY_OVERLAY_SECONDS,
     EnergyLadderGenerator,
     LazyOverlayGenerator,
@@ -21,12 +21,12 @@ from encore.smartfades.mixing.planner.candidates import (
     _window_duties,
     earns_instrumental_blend,
 )
-from encore.smartfades.mixing.planner.context import (
+from am_party.smartfades.mixing.planner.context import (
     TransitionContext,
     build_transition_context,
 )
-from encore.smartfades.mixing.planner.planner import SmartCrossFadePlanner
-from encore.smartfades.audio_analysis import AudioAnalysisData
+from am_party.smartfades.mixing.planner.planner import SmartCrossFadePlanner
+from am_party.smartfades.audio_analysis import AudioAnalysisData
 
 
 def _analysis(

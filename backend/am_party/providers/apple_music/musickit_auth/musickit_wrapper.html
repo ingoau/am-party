@@ -1,0 +1,216 @@
+<!doctype html>
+<!--
+  Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
+  (music_assistant/providers/apple_music/musickit_auth/musickit_wrapper.html)
+  Modifications: config is inlined by render_musickit_auth_page() instead of a generated
+  index.js; the token is POSTed with fetch (same-origin cookies) as
+  {"music_user_token", "music_user_token_timestamp"} and the page then navigates to
+  /admin/settings instead of closing a popup window; MA's flow-timeout/unload callbacks,
+  the MA logo and the copied Apple stylesheet were replaced by a small local stylesheet.
+  The MusicKit v3 configure/authorize logic and the shared-session handling are kept.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Required to ensure authentication works behind a reverse proxy -->
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Connect Apple Music</title>
+  <style>/*__AM_PARTY_CSS__*/</style>
+  <script>/*__AM_PARTY_CONFIG__*/</script>
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components async></script>
+  <script>
+    var music = null;
+    var music_user_token = "";
+    var music_user_token_timestamp = 0;
+    var sending = false;
+    // token MusicKit already held on page load
+    var browser_token = "";
+
+    // MusicKit's authorization lives in localStorage under these keys. Dropping them
+    // forgets it locally; unauthorize() revokes it at Apple.
+    const MUSICKIT_STORAGE_PREFIX = 'music.';
+    // marks a reload that already dropped the stored session, so we never loop on it
+    const FRESH_SESSION_MARKER = '#new-account';
+    const SETTINGS_URL = '/admin/settings';
+
+    function $(id) { return document.getElementById(id); }
+
+    function setStatus(message, sub, isError) {
+      $('message').textContent = message;
+      $('sub-message').textContent = sub || '';
+      $('card').classList.toggle('error', !!isError);
+    }
+
+    function show(id, visible) { $(id).style.display = visible ? 'inline-block' : 'none'; }
+
+    // If MusicKit never loads (blocked CDN, offline) say so instead of spinning forever.
+    var loadTimer = setTimeout(function () {
+      if (!music) {
+        setStatus('Apple MusicKit did not load',
+          'Check your internet connection or content blockers (js-cdn.music.apple.com), then reload.', true);
+      }
+    }, 20000);
+
+    document.addEventListener('musickitloaded', function () {
+      setStatus('Apple MusicKit loaded', '');
+      MusicKit.configure({
+        developerToken: AM_PARTY_CONFIG.developer_token,
+        app: { name: AM_PARTY_CONFIG.app_name, build: AM_PARTY_CONFIG.app_build }
+      }).then(function () {
+        clearTimeout(loadTimer);
+        music = MusicKit.getInstance();
+        browser_token = (typeof music.musicUserToken === 'string') ? music.musicUserToken : "";
+        $('signin_button').disabled = false;
+        show('signin_button', true);
+        if (music.isAuthorized) {
+          setStatus('Already signed in',
+            'Choose Continue to send this account\'s token to ' + AM_PARTY_CONFIG.app_name +
+            ', or use a different Apple Account below.');
+          $('signin_button').textContent = 'Continue';
+          show('signout_button', true);
+        } else {
+          setStatus('Not signed in',
+            sessionForgotten() ? 'Sign in with the Apple Account you want ' + AM_PARTY_CONFIG.app_name + ' to use.'
+                               : 'Sign in with Apple to let ' + AM_PARTY_CONFIG.app_name + ' play from your Apple Music account.');
+          show('signout_button', false);
+        }
+      }).catch(function (error) {
+        clearTimeout(loadTimer);
+        console.error('MusicKit configure failed: ', error);
+        setStatus('Apple MusicKit rejected the developer token',
+          'The developer token is invalid or expired. Update it in the settings and try again.', true);
+      });
+    });
+
+    function sessionForgotten() {
+      return window.location.hash === FRESH_SESSION_MARKER;
+    }
+
+    // Forget the session locally (the token stays valid at Apple) and reload.
+    function forgetSessionAndReload() {
+      try {
+        for (const key of Object.keys(window.localStorage)) {
+          if (key.startsWith(MUSICKIT_STORAGE_PREFIX)) {
+            window.localStorage.removeItem(key);
+          }
+        }
+      } catch (error) {
+        console.error('Could not clear the stored MusicKit session: ', error);
+      }
+      window.location.hash = FRESH_SESSION_MARKER;
+      window.location.reload();
+    }
+
+    async function sendToken() {
+      if (sending) { return; }
+      sending = true;
+      setStatus('Saving…', 'Sending the Apple Music token to ' + AM_PARTY_CONFIG.app_name + '.');
+      try {
+        const response = await fetch(AM_PARTY_CONFIG.callback_url, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({
+            music_user_token: music_user_token,
+            music_user_token_timestamp: music_user_token_timestamp
+          })
+        });
+        if (!response.ok) {
+          let detail = response.status + ' ' + response.statusText;
+          try {
+            const body = await response.json();
+            detail = body.detail || body.error || body.message || detail;
+            if (typeof detail !== 'string') { detail = JSON.stringify(detail); }
+          } catch (e) { /* not JSON */ }
+          throw new Error(detail);
+        }
+        setStatus('Apple Music connected', 'Returning to settings…');
+        show('signin_button', false);
+        show('signout_button', false);
+        setTimeout(function () { window.location.href = SETTINGS_URL; }, 1500);
+      } catch (error) {
+        console.error('Error sending token: ', error);
+        let sub = String(error && error.message ? error.message : error);
+        if (/^(401|403)\b/.test(sub)) { sub += ' (are you still logged in as admin?)'; }
+        setStatus('Could not save the Apple Music token', sub, true);
+        $('signin_button').disabled = false;
+        show('signin_button', true);
+      } finally {
+        sending = false;
+      }
+    }
+
+    function mkSignInButton() {
+      if (!music) { return; }
+      $('signin_button').disabled = true;
+      setStatus('Apple sign-in window should open…',
+        'If no window opens, allow pop-ups for this site and try again.');
+      const was_authorized = music.isAuthorized;
+      music.authorize().then(function (token) {
+        if (!token) { throw new Error('MusicKit returned no token'); }
+        if (sessionForgotten() && was_authorized && token === browser_token) {
+          // MusicKit reused the session we tried to drop
+          setStatus('Could not start a new Apple Music sign-in',
+            'This browser is still signed in with another Apple Account. Open this page in a private window and sign in there.', true);
+          $('signin_button').disabled = false;
+          return;
+        }
+        music_user_token = token;
+        music_user_token_timestamp = Math.floor(Date.now() / 1000);
+        sendToken();
+      }).catch(function (error) {
+        console.error('Error signing in: ', error);
+        let sub = 'Please try again.';
+        const text = String(error && (error.errorCode || error.message || error));
+        if (/AUTHORIZATION_ERROR|cancel/i.test(text)) { sub = 'Sign-in was cancelled or denied. Please try again.'; }
+        if (/subscription/i.test(text)) { sub = 'This Apple Account needs an active Apple Music subscription.'; }
+        setStatus('Error signing in to Apple Music', sub, true);
+        $('signin_button').disabled = false;
+        show('signin_button', true);
+      });
+    }
+
+    function mkSignOutButton() {
+      if (!music) { return; }
+      // revokes this browser's MusicKit session at Apple
+      music.unauthorize();
+      music_user_token = "";
+      music_user_token_timestamp = 0;
+      browser_token = "";
+      $('signin_button').textContent = 'Sign In';
+      show('signout_button', false);
+      setStatus('Signed out', 'Sign in with the Apple Account you want ' + AM_PARTY_CONFIG.app_name + ' to use.');
+    }
+
+    function mkSwitchAccountButton() {
+      music_user_token = "";
+      music_user_token_timestamp = 0;
+      forgetSessionAndReload();
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      document.querySelectorAll('.app-name').forEach(function (el) { el.textContent = AM_PARTY_CONFIG.app_name; });
+    });
+  </script>
+</head>
+<body>
+  <main id="card" class="card">
+    <div class="icons" aria-hidden="true">
+      <div class="icon icon-apple">&#9835;</div>
+      <div class="arrows">&#8644;</div>
+      <div class="icon icon-app">&#9836;</div>
+    </div>
+    <h1 id="message" role="status" aria-live="polite">Apple MusicKit is loading…</h1>
+    <p id="sub-message" class="sub">Sign in with Apple to let <span class="app-name"></span> play from your Apple Music account.</p>
+    <p><button id="signin_button" class="btn primary" onclick="mkSignInButton();" disabled>Sign In</button></p>
+    <p><button id="signout_button" class="btn secondary" onclick="mkSignOutButton();" style="display: none">Sign Out</button></p>
+    <p class="links">
+      <a href="#" onclick="mkSwitchAccountButton(); return false;">Use a different Apple&nbsp;Account</a>
+      &middot;
+      <a href="/admin/settings">Back to settings</a>
+    </p>
+    <p class="fine">An active Apple Music subscription is required. Your Apple password is entered only on Apple's sign-in page.</p>
+  </main>
+</body>
+</html>

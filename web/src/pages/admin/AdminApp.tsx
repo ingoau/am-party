@@ -40,7 +40,7 @@ export default function AdminApp() {
   // Sent to every signed-in user whenever anyone's permissions change — ours may have too.
   useLiveEvent("users_changed", load);
 
-  useDocumentTitle(`Host · ${state?.party_name || "Encore"}`);
+  useDocumentTitle(`Host · ${state?.party_name || "am-party"}`);
 
   if (error && !me) {
     return (
@@ -61,7 +61,7 @@ export default function AdminApp() {
   if (!me.user) {
     return (
       <Gate
-        title={state?.party_name || "Encore"}
+        title={state?.party_name || "am-party"}
         body={me.oidc_enabled ? "Hosts sign in to approve requests and run the queue." : "Sign-in isn't configured on this server. Set up OIDC to use the host panel."}
       >
         {me.oidc_enabled && (
@@ -98,7 +98,7 @@ export default function AdminApp() {
             <span />
             <span />
           </span>
-          <div className="admin__party truncate">{state?.party_name || "Encore"}</div>
+          <div className="admin__party truncate">{state?.party_name || "am-party"}</div>
         </div>
         <nav className="admin__links">
           {allowed.map((s) => (

@@ -3,10 +3,10 @@ import type { SendspinPlayer } from "@sendspin/sendspin-js";
 import { lazyToast as toast } from "../components/lazyToast";
 import { storage } from "../util";
 
-const K_NAME = "encore.deviceName";
-const K_VOL = "encore.volume";
-const K_MUTED = "encore.muted";
-const K_DELAY = "encore.syncDelayMs";
+const K_NAME = "am-party.deviceName";
+const K_VOL = "am-party.volume";
+const K_MUTED = "am-party.muted";
+const K_DELAY = "am-party.syncDelayMs";
 
 type SendspinModule = typeof import("@sendspin/sendspin-js");
 let sendspinMod: SendspinModule | null = null;
@@ -176,7 +176,7 @@ export function useSendspin() {
         player = new mod.SendspinPlayer({
           baseUrl: location.origin,
           clientName: name,
-          productName: "Encore",
+          productName: "am-party",
           // codecs left at default: the SDK filters out what this browser can't decode
           // (e.g. no opus without WebCodecs / a secure context).
           // Only override when the user set one here; otherwise keep any server-commanded delay the SDK persisted.

@@ -1,4 +1,4 @@
-# Encore
+# am-party
 
 A self-hosted party jukebox. Any device opens the page and plays the party music **in tight sync** (Sendspin protocol). Guests scan a QR code to request songs from **Apple Music**, every request goes through an **OIDC-authenticated approval panel**, and tracks are mixed with Music Assistant's **smart crossfade**.
 
@@ -21,7 +21,7 @@ queue/requests/fallback playlist ─► engine ─► smart/standard crossfade r
 ## Run it
 
 ```sh
-cp .env.example .env      # set ENCORE_PUBLIC_URL and the OIDC_* values
+cp .env.example .env      # set AM_PARTY_PUBLIC_URL and the OIDC_* values
 mkdir -p data secrets     # create these yourself so they aren't created root-owned
 docker compose up -d --build
 docker compose logs -f    # WARN lines tell you if OIDC / Apple Music still need setup
@@ -35,10 +35,10 @@ writable, it exits with the `chown` command to fix it. Logs are capped (json-fil
 Then:
 
 1. Register an OIDC client with your provider (Authentik, Pocket ID, Keycloak, Authelia, Google…):
-   - redirect URI: `${ENCORE_PUBLIC_URL}/auth/callback`
+   - redirect URI: `${AM_PARTY_PUBLIC_URL}/auth/callback`
    - scopes: `openid profile email`; confidential client (secret) or public client with PKCE both work
-   - **restrict who can log in at the provider** (bind the app to a group / user list). Encore trusts every identity the provider vouches for.
-2. Set `ENCORE_ADMIN_EMAILS=you@example.com` (recommended), then open `${ENCORE_PUBLIC_URL}/admin` and sign in. Without `ENCORE_ADMIN_EMAILS` the *first* person to sign in becomes admin (the log shows a warning until someone has).
+   - **restrict who can log in at the provider** (bind the app to a group / user list). am-party trusts every identity the provider vouches for.
+2. Set `AM_PARTY_ADMIN_EMAILS=you@example.com` (recommended), then open `${AM_PARTY_PUBLIC_URL}/admin` and sign in. Without `AM_PARTY_ADMIN_EMAILS` the *first* person to sign in becomes admin (the log shows a warning until someone has).
 3. **Settings → Apple Music**: click **Connect Apple Music** and sign in with your Apple ID (MusicKit, same flow as Music Assistant). Or provide tokens as files, see below.
 4. **Settings → Fallback playlist**: pick one of your playlists or paste an Apple Music playlist link.
 5. Open `/` on the TVs/speakers, tap **Listen**. Guests scan the QR code.
@@ -61,36 +61,36 @@ Apple allows one concurrent stream per account — don't play the same account e
 
 | Variable | Default | |
 |---|---|---|
-| `ENCORE_PUBLIC_URL` | `http://localhost:8930` | public base URL (QR code, OIDC redirect, cookies `Secure` when https) |
+| `AM_PARTY_PUBLIC_URL` | `http://localhost:8930` | public base URL (QR code, OIDC redirect, cookies `Secure` when https) |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | — | generic OIDC; `*_FILE` variants supported |
 | `OIDC_PROVIDER_NAME` | `SSO` | label on the sign-in button |
 | `OIDC_SCOPES` | `openid profile email` | |
-| `ENCORE_ADMIN_EMAILS` | — | comma-separated emails that become admin when they sign in (email must not be `email_verified: false`). When set, the "first user becomes admin" rule is off. |
-| `ENCORE_ALLOWED_EMAILS`, `ENCORE_ALLOWED_DOMAINS` | — | optional sign-in allowlists (comma-separated; e.g. `example.org`). Anyone else gets a 403 page. Admin emails are always allowed. |
-| `ENCORE_TRUSTED_PROXY` | unset | `cloudflare` (use `CF-Connecting-IP`) or `x-forwarded-for` (right-most entry) — only when Encore is reachable **solely** through that proxy; otherwise clients could spoof their IP. Unset = the socket address. |
-| `ENCORE_IP_SEARCHES_PER_MINUTE` | `120` | guest searches per client IP per minute |
-| `ENCORE_IP_MAX_PENDING` | `20` | pending guest requests per client IP |
-| `ENCORE_MAX_LISTENERS` | `100` | max concurrent `/sendspin` connections |
-| `ENCORE_SENDSPIN_PORT` | unset (off) | also run the native Sendspin listener on this port (plain `ws://`, for hardware players on the LAN; publish it in compose) |
-| `ENCORE_HOST_PORT` | `8930` | host port in compose |
-| `ENCORE_LOG_LEVEL` | `INFO` | |
+| `AM_PARTY_ADMIN_EMAILS` | — | comma-separated emails that become admin when they sign in (email must not be `email_verified: false`). When set, the "first user becomes admin" rule is off. |
+| `AM_PARTY_ALLOWED_EMAILS`, `AM_PARTY_ALLOWED_DOMAINS` | — | optional sign-in allowlists (comma-separated; e.g. `example.org`). Anyone else gets a 403 page. Admin emails are always allowed. |
+| `AM_PARTY_TRUSTED_PROXY` | unset | `cloudflare` (use `CF-Connecting-IP`) or `x-forwarded-for` (right-most entry) — only when am-party is reachable **solely** through that proxy; otherwise clients could spoof their IP. Unset = the socket address. |
+| `AM_PARTY_IP_SEARCHES_PER_MINUTE` | `120` | guest searches per client IP per minute |
+| `AM_PARTY_IP_MAX_PENDING` | `20` | pending guest requests per client IP |
+| `AM_PARTY_MAX_LISTENERS` | `100` | max concurrent `/sendspin` connections |
+| `AM_PARTY_SENDSPIN_PORT` | unset (off) | also run the native Sendspin listener on this port (plain `ws://`, for hardware players on the LAN; publish it in compose) |
+| `AM_PARTY_HOST_PORT` | `8930` | host port in compose |
+| `AM_PARTY_LOG_LEVEL` | `INFO` | |
 
 ### Security notes
 
-- **Who can sign in** is decided by your OIDC provider: restrict the Encore application to the people who should manage the party. Use `ENCORE_ADMIN_EMAILS` so nobody can claim admin by signing in first, and optionally `ENCORE_ALLOWED_EMAILS`/`ENCORE_ALLOWED_DOMAINS` as a second gate.
-- **Guests** get a server-signed anonymous cookie (HMAC with the session secret). Guest searches and requests are rate limited per guest, per client IP and globally (600 searches/min, 200 pending requests in total). Everyone on the party wifi usually shares one public IP, so per-IP limits are deliberately loose; raise them for big parties. Behind Cloudflare Tunnel or a reverse proxy set `ENCORE_TRUSTED_PROXY`, or every guest shares the proxy's address.
+- **Who can sign in** is decided by your OIDC provider: restrict the am-party application to the people who should manage the party. Use `AM_PARTY_ADMIN_EMAILS` so nobody can claim admin by signing in first, and optionally `AM_PARTY_ALLOWED_EMAILS`/`AM_PARTY_ALLOWED_DOMAINS` as a second gate.
+- **Guests** get a server-signed anonymous cookie (HMAC with the session secret). Guest searches and requests are rate limited per guest, per client IP and globally (600 searches/min, 200 pending requests in total). Everyone on the party wifi usually shares one public IP, so per-IP limits are deliberately loose; raise them for big parties. Behind Cloudflare Tunnel or a reverse proxy set `AM_PARTY_TRUSTED_PROXY`, or every guest shares the proxy's address.
 - Sessions last at most 30 days and expire after 7 days unused. Signing out closes that session's live connections.
-- Live-update websockets are capped per IP (100) and in total (500); `/sendspin` per IP (50) and in total (`ENCORE_MAX_LISTENERS`).
-- Responses carry a strict Content-Security-Policy (`script-src 'self'`), `X-Frame-Options: DENY` and HSTS when `ENCORE_PUBLIC_URL` is https.
+- Live-update websockets are capped per IP (100) and in total (500); `/sendspin` per IP (50) and in total (`AM_PARTY_MAX_LISTENERS`).
+- Responses carry a strict Content-Security-Policy (`script-src 'self'`), `X-Frame-Options: DENY` and HSTS when `AM_PARTY_PUBLIC_URL` is https.
 
 ## Development
 
-- Backend: Python 3.14, aiohttp (`backend/encore`). Tests: `backend/tests` (engine, Apple Music parsers, Sendspin, smart fades).
+- Backend: Python 3.14, aiohttp (`backend/am_party`). Tests: `backend/tests` (engine, Apple Music parsers, Sendspin, smart fades).
   ```sh
-  docker build --target test -t encore:test .   # runtime image + pytest, tests baked in
-  docker run --rm encore:test                     # runs the whole suite
+  docker build --target test -t am-party:test .   # runtime image + pytest, tests baked in
+  docker run --rm am-party:test                     # runs the whole suite
   # against your working tree without rebuilding:
-  docker run --rm -v $PWD/backend:/app -w /app encore:test python -m pytest -q -p no:cacheprovider tests
+  docker run --rm -v $PWD/backend:/app -w /app am-party:test python -m pytest -q -p no:cacheprovider tests
   ```
   Python dependencies: `backend/requirements.txt` (runtime, the only source of truth) and
   `backend/requirements-dev.txt` (tests).
@@ -99,4 +99,4 @@ Apple allows one concurrent stream per account — don't play the same account e
 
 ## Credits
 
-Encore vendors code from [Music Assistant](https://github.com/music-assistant/server) (Apache-2.0): the Apple Music provider and the smart fades planner/renderer/analysis. See [NOTICE.md](NOTICE.md) for details and third-party model attributions (Beat This!, S-KEY, FireRedVAD).
+am-party vendors code from [Music Assistant](https://github.com/music-assistant/server) (Apache-2.0): the Apple Music provider and the smart fades planner/renderer/analysis. See [NOTICE.md](NOTICE.md) for details and third-party model attributions (Beat This!, S-KEY, FireRedVAD).

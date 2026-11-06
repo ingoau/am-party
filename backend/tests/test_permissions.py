@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from encore.api import _apply_user_changes
-from encore.auth import PERMISSIONS, User
-from encore.db import Database
-from encore.party import ApiError, Hub
+from am_party.api import _apply_user_changes
+from am_party.auth import PERMISSIONS, User
+from am_party.db import Database
+from am_party.party import ApiError, Hub
 
 
-class FakeEncore:
+class FakeAmParty:
     def __init__(self, db: Database) -> None:
         self.db = db
         self.hub = Hub()
@@ -77,7 +77,7 @@ async def test_bulk_add_remove_and_last_admin(tmp_path: Path) -> None:
         await db.execute(
             "INSERT INTO users(sub, is_admin, created_at) VALUES(?,?,0)", sub, admin
         )
-    e = FakeEncore(db)
+    e = FakeAmParty(db)
     await _apply_user_changes(e, [2, 3], None, None, ["queue_add", "playback_skip", "nope"], [])
     u = await users(db)
     assert u["b"].granted == ["playback_skip", "queue_add"] == u["c"].granted

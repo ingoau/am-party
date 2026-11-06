@@ -19,8 +19,8 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-from encore.models import BYTES_PER_SECOND, SAMPLE_RATE
-from encore.player.sendspin_out import SendspinOutput
+from am_party.models import BYTES_PER_SECOND, SAMPLE_RATE
+from am_party.player.sendspin_out import SendspinOutput
 
 from .harness import sine_pcm
 
@@ -39,7 +39,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
 
     session = aiohttp.ClientSession()
-    out = SendspinOutput(session, name="Encore Demo", port=0)
+    out = SendspinOutput(session, name="am-party Demo", port=0)
     out.on_listeners_changed = lambda n: log(event="listeners", count=n)
     await out.start()
 
@@ -53,7 +53,7 @@ async def main() -> None:
     await web.TCPSite(runner, "0.0.0.0", args.port).start()
     log(event="ready", port=args.port)
 
-    out.set_metadata("Sine 440", "Encore", "Tests", None, args.seconds, 0.0, True)
+    out.set_metadata("Sine 440", "am-party", "Tests", None, args.seconds, 0.0, True)
     chunk_s = 0.25
     frame = 0
     while frame < args.seconds * SAMPLE_RATE:

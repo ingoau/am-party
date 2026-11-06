@@ -1,4 +1,4 @@
-"""Encore-specific tests for the smart fades public API (build_transition / AnalysisWorker)."""
+"""am-party-specific tests for the smart fades public API (build_transition / AnalysisWorker)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import subprocess
 import numpy as np
 import pytest
 
-from encore.models import BYTES_PER_SECOND, SAMPLE_RATE, seconds_to_bytes
-from encore.smartfades import (
+from am_party.models import BYTES_PER_SECOND, SAMPLE_RATE, seconds_to_bytes
+from am_party.smartfades import (
     TAIL_SECONDS_SMART,
     AnalysisWorker,
     TransitionResult,
@@ -149,7 +149,7 @@ def test_smart_crossfade() -> None:
 
 def test_worker_unavailable_when_models_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     """A broken analysis stack leaves available False and analyze_file returning None."""
-    monkeypatch.setenv("ENCORE_BEAT_THIS_CHECKPOINT", "/nonexistent/checkpoint.ckpt")
+    monkeypatch.setenv("AM_PARTY_BEAT_THIS_CHECKPOINT", "/nonexistent/checkpoint.ckpt")
 
     async def go() -> tuple[bool, str | None, dict | None]:
         worker = AnalysisWorker(startup_timeout=120)

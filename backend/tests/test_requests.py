@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from encore.db import Database
-from encore.models import Track
-from encore.party import Hub, Party
+from am_party.db import Database
+from am_party.models import Track
+from am_party.party import Hub, Party
 
 
 async def make_party(tmp_path: Path) -> Party:
@@ -61,7 +61,7 @@ async def test_disabling_approval(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_withdraw_and_positions(tmp_path: Path) -> None:
-    from encore.party import ApiError
+    from am_party.party import ApiError
 
     p = await make_party(tmp_path)
     await p.create_request("g1", "0")

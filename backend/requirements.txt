@@ -1,4 +1,4 @@
-# Encore runtime requirements (python 3.14). Torch comes from the CPU wheel index.
+# am-party runtime requirements (python 3.14). Torch comes from the CPU wheel index.
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 # web / core

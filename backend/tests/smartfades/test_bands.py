@@ -1,5 +1,5 @@
 # Adapted from Music Assistant (Apache-2.0), https://github.com/music-assistant/server
-# (tests/controllers/streams/smart_fades/test_bands.py, v2.10.8). Modified for Encore: import paths
+# (tests/controllers/streams/smart_fades/test_bands.py, v2.10.8). Modified for am-party: import paths
 # (and pytest>=9 approx() of nested step lists in test_assembly.py).
 """Tests for the band-power signal module (bar fractions on the deck's own grid)."""
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from encore.smartfades.mixing.bands import (
+from am_party.smartfades.mixing.bands import (
     build_band_profile,
     instrumental_claim_confirmed,
     loudness_referenced_level,
@@ -16,8 +16,8 @@ from encore.smartfades.mixing.bands import (
     window_duty,
     window_fraction,
 )
-from encore.smartfades.mixing.models import BandProfile
-from encore.smartfades.mixing.vocal import VocalMask
+from am_party.smartfades.mixing.models import BandProfile
+from am_party.smartfades.mixing.vocal import VocalMask
 from .conftest import _analysis_with_bands
 
 

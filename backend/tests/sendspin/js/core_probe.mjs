@@ -1,8 +1,8 @@
 // Headless probe: two SendspinCore (sendspin-js 5) clients through the /sendspin route.
-// usage: node core_probe.mjs http://encore:8080 [seconds]
+// usage: node core_probe.mjs http://am-party:8080 [seconds]
 import { SendspinCore } from "@sendspin/sendspin-js";
 
-const base = process.argv[2] ?? "http://encore:8080";
+const base = process.argv[2] ?? "http://am-party:8080";
 const seconds = Number(process.argv[3] ?? 8);
 
 function makeClient(name) {
