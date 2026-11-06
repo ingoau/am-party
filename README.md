@@ -4,8 +4,8 @@
 
 A self-hosted party jukebox. Any device opens the page and plays the party music **in tight sync** (Sendspin protocol). Guests scan a QR code to request songs from **Apple Music**, every request goes through an **OIDC-authenticated approval panel**, and tracks are mixed with Music Assistant's **smart crossfade**.
 
-- `/` — TV / listening screen: now playing, up next, QR code, listen toggle, mute and volume per device
-- `/request` — guest page (no login): search Apple Music, request songs, see request status
+- `/` — guest page (no login): search Apple Music, request songs, see request status
+- `/tv` — TV / listening screen: now playing, up next, QR code, listen toggle, mute and volume per device
 - `/admin` — sign in with your OIDC provider. The **first user to sign in becomes admin**; everyone after that has no privileges until an admin grants them (approve requests, manage queue, admin)
 
 ## How it works
