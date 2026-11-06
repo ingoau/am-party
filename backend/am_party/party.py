@@ -801,6 +801,24 @@ class Party:
                     now(),
                 )
                 added.append({"id": qid, "position": pos, "track": track, "source": source, "request_id": None})
+        new = eng.now.candidate if eng.now else None
+        if new is not None and new is not cur:
+            # a crossfade handed over while we wrote: keep that song too, right after
+            qid = await self.db.execute(
+                "INSERT INTO queue(position, track_id, track, source, request_id, added_by, created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                first - 0.5,
+                new.track.id,
+                json.dumps(new.track.to_dict()),
+                new.source,
+                None,
+                None,
+                now(),
+            )
+            await self.db.execute("DELETE FROM history WHERE id > ?", rows[0]["id"])
+            added.append(
+                {"id": qid, "position": first - 0.5, "track": new.track, "source": new.source, "request_id": None}
+            )
         self.queue += added
         self.queue.sort(key=lambda q: (q["position"], q["id"]))
         # skip even past a track that is already locked in / being mixed in

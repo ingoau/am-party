@@ -181,11 +181,11 @@ class Engine:
             return False
         item = self.now.prepared
         pos_s = max(0.0, min(float(pos_s), max(0.0, item.duration - 1.0)))
+        self._seek = pos_s
         if self.paused and self._paused_pos is not None:
             # resume() continues from the frozen position
             self._freeze(self.now.candidate, item, pos_s)
         else:
-            self._seek = pos_s
             # report the new position right away; the handover fixes the exact clock
             self.now.started_at = time.time() - pos_s
             self._wake.set()
@@ -328,6 +328,9 @@ class Engine:
                 # pause/skip pressed while the previous track's last buffered audio
                 # plays and we wait for this one: stop that audio now
                 await self._stop_audible()
+            if self._requeue or (self._seek is not None and self._stream_active):
+                # "previous" or a seek: the caller handles it without this track
+                return None
         ok = item.ok
         if not ok:
             err = item.error or "timed out preparing track"
@@ -477,11 +480,16 @@ class Engine:
                 if nxt is None:
                     return await self._drain_and_idle(started_at, item)
                 nitem = await self._ensure_decoded(nxt)
-                if nitem is None:
+                if nitem is None and not self._requeue and self._seek is None:
                     # try whatever is next now
                     nxt = self._lock_next()
-                    if nxt is None or (nitem := await self._ensure_decoded(nxt)) is None:
-                        return await self._drain_and_idle(started_at, item)
+                    if nxt is not None:
+                        nitem = await self._ensure_decoded(nxt)
+                if self._seek is not None and not self._requeue:
+                    # seek pressed while the last buffered audio plays: it is for `cand`
+                    return await self._interrupt(cand, item, started_at, pos)
+                if nitem is None and not self._requeue:
+                    return await self._drain_and_idle(started_at, item)
                 if self._requeue:
                     # "previous" changed what comes next while we waited for `nxt`
                     self.locked = None

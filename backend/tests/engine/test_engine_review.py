@@ -323,3 +323,47 @@ async def test_requeue_skip_mid_transition_plays_new_front(media) -> None:  # no
     await wait_for(lambda: len(party.started) >= 2, 30)
     await eng.stop()
     assert party.started[:2] == ["a", "c"]
+
+
+@pytest.mark.asyncio
+async def test_seek_forward_right_after_pause_is_kept(media) -> None:  # noqa: ANN001
+    """A seek before the engine has handled the pause isn't clamped to what was written."""
+    eng, party, _ = build(media, ["a", "b"], transition=None)
+    out = RealtimeOutput()
+    eng.output = out
+    await eng.start()
+    await wait_for(lambda: party.started == ["a"], 30)
+    await asyncio.sleep(0.3)
+    await eng.pause()
+    assert eng.seek(8.0)  # same tick: _interrupt hasn't run yet
+    await asyncio.sleep(0.5)
+    assert eng.position() == pytest.approx(8.0, abs=0.01)
+    await eng.resume()
+    t0 = time.time()
+    await wait_for(lambda: party.started == ["a", "b"], 30)
+    assert time.time() - t0 < 4.0
+    await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_requeue_at_boundary_does_not_wait_for_next_decode(media) -> None:  # noqa: ANN001
+    """'previous' while the next track is still decoding goes back without waiting for it."""
+    eng, party, out = build(media, ["a", "b", "c"], transition=None)
+    orig = eng._ensure_decoded
+    stalled = asyncio.Event()
+
+    async def ensure(cand, timeout=60):  # noqa: ANN001, ANN202
+        if cand.track.id == "b" and not stalled.is_set():
+            stalled.set()
+            party.queue = [party.queue[1], party.queue[0]]  # c moved in front of b
+            eng.skip(requeue=True)
+            # b's decode would take forever: the engine must not wait for it
+            item = eng.preparer.prepare(cand.track)
+            item.decoded.clear()
+            return await orig(cand, timeout)
+        return await orig(cand, timeout)
+
+    eng._ensure_decoded = ensure  # type: ignore[method-assign]
+    await eng.start()
+    await wait_for(lambda: party.started[:2] == ["a", "c"], 20)
+    await eng.stop()
