@@ -403,6 +403,9 @@ class Party:
             "require_approval": bool(self._settings.get("require_approval", True)),
             "listeners": self.listeners,
             "public_url": self.public_url,
+            "tv_cta_text": self._settings.get("tv_cta_text", ""),
+            "tv_paused_text": self._settings.get("tv_paused_text", ""),
+            "tv_empty_text": self._settings.get("tv_empty_text", ""),
         }
 
     def set_listeners(self, n: int) -> None:
@@ -811,6 +814,10 @@ class Party:
                 if val is not None and not isinstance(val, str):
                     raise ApiError(400, "party_name must be a string")
                 val = (val or "").strip()[:60] or "Party"
+            elif key in ("tv_cta_text", "tv_paused_text", "tv_empty_text"):
+                if val is not None and not isinstance(val, str):
+                    raise ApiError(400, f"{key} must be a string or null")
+                val = " ".join((val or "").split())[:80]  # "" = built-in default
             elif key in ("fallback_playlist_id", "fallback_playlist_name"):
                 if val is not None and not isinstance(val, str):
                     raise ApiError(400, f"{key} must be a string or null")

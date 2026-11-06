@@ -3,7 +3,7 @@ import { api } from "../../api/client";
 import type { AdminStatus, AppleMusicStatus, CrossfadeMode, Playlist, Settings } from "../../api/types";
 import { Artwork } from "../../components/Artwork";
 import { Check } from "lucide-react";
-import { cx, fmtDate } from "../../util";
+import { TV_TEXT_DEFAULTS, cx, fmtDate } from "../../util";
 import { PageHeader, flash } from "./common";
 import { RequireApprovalSwitch } from "./RequireApprovalSwitch";
 import { useLive } from "../../hooks/live";
@@ -175,6 +175,30 @@ export function SettingsTab() {
               <span>Requests open</span>
             </label>
             <RequireApprovalSwitch />
+          </section>
+
+          <section className="card">
+            <h2 className="card__title">TV screen</h2>
+            {(
+              [
+                ["tv_cta_text", "Request prompt (next to the QR code)", TV_TEXT_DEFAULTS.cta],
+                ["tv_paused_text", "When requests are paused", TV_TEXT_DEFAULTS.paused],
+                ["tv_empty_text", "When nothing is queued", TV_TEXT_DEFAULTS.empty],
+              ] as const
+            ).map(([k, label, placeholder]) => (
+              <label className="field" key={k}>
+                <span className="field__label">{label}</span>
+                <input
+                  className="input"
+                  value={draft[k]}
+                  placeholder={placeholder}
+                  maxLength={80}
+                  onChange={(e) => set(k, e.target.value, 700)}
+                  onBlur={() => void flush()}
+                />
+              </label>
+            ))}
+            <span className="field__hint">Leave blank to use the default text.</span>
           </section>
 
           <FallbackCard draft={draft} set={set} />

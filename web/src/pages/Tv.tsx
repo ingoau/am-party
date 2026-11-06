@@ -10,7 +10,7 @@ import { LazyToaster } from "../components/lazyToast";
 import { QrCode } from "../components/QrCode";
 import { Headphones, Music, Pause, Settings, SquareLetterE, Volume2, VolumeX, WifiOff } from "lucide-react";
 import type { QueueItem, Track } from "../api/types";
-import { artworkAt, cx } from "../util";
+import { TV_TEXT_DEFAULTS, artworkAt, cx } from "../util";
 import "../styles/tv.css";
 
 /** How long the controls stay up after the last mouse move / touch / key press. */
@@ -100,6 +100,10 @@ export function TvPage() {
   const party = state?.party_name || "am-party";
   useDocumentTitle(np ? `${np.title} · ${np.artist} · ${party}` : party);
 
+  const ctaText = state?.tv_cta_text || TV_TEXT_DEFAULTS.cta;
+  const pausedText = state?.tv_paused_text || TV_TEXT_DEFAULTS.paused;
+  const emptyText = state?.tv_empty_text || TV_TEXT_DEFAULTS.empty;
+
   const stacked = useMediaQuery(STACKED_MQ);
   const longTitle = !!np && np.title.length > 18;
 
@@ -152,9 +156,9 @@ export function TvPage() {
           </section>
 
           <aside className="tv__panel" aria-label="Coming up">
-            <RequestCta url={base} host={host} open={requestsOpen} />
+            <RequestCta url={base} host={host} open={requestsOpen} text={ctaText} pausedText={pausedText} />
             <div className="tv__divider" aria-hidden />
-            <ComingUp upcoming={state!.upcoming} fallback={state!.up_next_fallback} stacked={stacked} />
+            <ComingUp upcoming={state!.upcoming} fallback={state!.up_next_fallback} stacked={stacked} emptyText={emptyText} />
           </aside>
         </main>
       ) : (
@@ -164,7 +168,7 @@ export function TvPage() {
             {state && (
               <>
                 <p className="tv__idle-sub">
-                  {requestsOpen ? "Scan the code to pick the first song." : "Requests are paused."}
+                  {requestsOpen ? "Scan the code to pick the first song." : pausedText}
                 </p>
                 {requestsOpen && (
                   <Link to="/" className="tv__idle-qr" aria-label="Request a song">
@@ -255,13 +259,25 @@ export function TvPage() {
   );
 }
 
-/** QR + "Pick the next song" on TVs; a plain button on phones (the viewer is already on one). */
-function RequestCta({ url, host, open }: { url: string; host: string; open: boolean }) {
+/** QR + "Pick the next song" (customisable) on TVs; a plain button on phones (the viewer is already on one). */
+function RequestCta({
+  url,
+  host,
+  open,
+  text,
+  pausedText,
+}: {
+  url: string;
+  host: string;
+  open: boolean;
+  text: string;
+  pausedText: string;
+}) {
   if (!open) {
     return (
       <div className="tv__cta tv__cta--closed">
         <div className="tv__cta-text">
-          <strong>Requests are paused</strong>
+          <strong>{pausedText}</strong>
         </div>
       </div>
     );
@@ -271,7 +287,7 @@ function RequestCta({ url, host, open }: { url: string; host: string; open: bool
       <Link to="/" className="tv__cta" aria-label="Request a song">
         <QrCode text={url} className="tv__qr-code" label="QR code: request a song" />
         <div className="tv__cta-text">
-          <strong>Pick the next song</strong>
+          <strong>{text}</strong>
           <span className="tv__host">{host}</span>
         </div>
       </Link>
@@ -287,10 +303,12 @@ const ComingUp = memo(function ComingUp({
   upcoming,
   fallback,
   stacked,
+  emptyText,
 }: {
   upcoming: QueueItem[];
   fallback: Track | null;
   stacked: boolean;
+  emptyText: string;
 }) {
   const listRef = useRef<HTMLOListElement>(null);
   const probeRef = useRef<HTMLLIElement>(null);
@@ -342,13 +360,13 @@ const ComingUp = memo(function ComingUp({
           (fallback ? (
             <Row track={fallback} dim />
           ) : (
-            <li className="cu__empty">No requests yet. Scan the code to pick one.</li>
+            <li className="cu__empty">{emptyText}</li>
           ))}
         <li className={cx("cu__more", more <= 0 && "is-hidden")} ref={moreRef} aria-hidden={more <= 0}>
           +{Math.max(1, more)} more
         </li>
       </ol>
-      {upcoming.length === 0 && fallback && <p className="cu__hint">No requests yet. Scan the code to pick one.</p>}
+      {upcoming.length === 0 && fallback && <p className="cu__hint">{emptyText}</p>}
     </div>
   );
 });

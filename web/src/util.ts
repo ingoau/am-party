@@ -50,3 +50,10 @@ export const storage = {
     }
   },
 };
+
+/** Built-in TV screen copy, used when the host hasn't customised it in Settings. */
+export const TV_TEXT_DEFAULTS = {
+  cta: "Pick the next song",
+  paused: "Requests are paused",
+  empty: "No requests yet. Scan the code to pick one.",
+} as const;
