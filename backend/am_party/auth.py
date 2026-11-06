@@ -230,6 +230,11 @@ main{{max-width:28rem;padding:2rem;text-align:center}}a{{color:#9cf}}</style></h
     )
 
 
+JWKS_TTL = 3600
+JWKS_MIN_REFETCH = 30
+OIDC_USER_AGENT = "am-party (+https://github.com/ingoau/am-party)"
+
+
 class AuthManager:
     def __init__(self, config: Config, db: Database, http: aiohttp.ClientSession) -> None:
         self.config = config
@@ -238,7 +243,12 @@ class AuthManager:
         self._discovery: dict[str, Any] | None = None
         self._discovery_at = 0.0
         self._pending: dict[str, dict[str, Any]] = {}
-        self._jwks: jwt.PyJWKClient | None = None
+        # JWKS cache: fetched with our aiohttp session (not PyJWKClient/urllib, whose
+        # default User-Agent is blocked by Cloudflare and similar WAFs)
+        self._jwks: jwt.PyJWKSet | None = None
+        self._jwks_uri: str | None = None
+        self._jwks_at = 0.0
+        self._jwks_lock = asyncio.Lock()
         # one shared aiosqlite connection: BEGIN IMMEDIATE can't serialise coroutines
         self._user_lock = asyncio.Lock()
 
@@ -247,7 +257,7 @@ class AuthManager:
         if self._discovery and time.time() - self._discovery_at < 3600:
             return self._discovery
         url = f"{self.config.oidc_issuer}/.well-known/openid-configuration"
-        async with self.http.get(url) as resp:
+        async with self.http.get(url, headers={"User-Agent": OIDC_USER_AGENT}) as resp:
             resp.raise_for_status()
             self._discovery = await resp.json(content_type=None)
         self._discovery_at = time.time()
@@ -259,9 +269,7 @@ class AuthManager:
 
     async def verify_id_token(self, id_token: str, disc: dict[str, Any]) -> dict[str, Any]:
         """Verify the id_token signature (JWKS), audience, expiry and issuer."""
-        if self._jwks is None or self._jwks.uri != disc["jwks_uri"]:
-            self._jwks = jwt.PyJWKClient(disc["jwks_uri"], cache_keys=True, lifespan=3600)
-        signing_key = await asyncio.to_thread(self._jwks.get_signing_key_from_jwt, id_token)
+        signing_key = await self._signing_key(id_token, disc["jwks_uri"])
         algorithms = id_token_algorithms(
             signing_key._jwk_data,  # noqa: SLF001
             disc.get("id_token_signing_alg_values_supported"),
@@ -281,6 +289,43 @@ class AuthManager:
             raise jwt.InvalidIssuerError("issuer mismatch")
         check_azp(claims, self.config.oidc_client_id or "")
         return claims
+
+    async def _load_jwks(self, uri: str, force: bool = False) -> jwt.PyJWKSet:
+        async with self._jwks_lock:
+            fresh = time.time() - self._jwks_at < JWKS_TTL
+            if self._jwks is not None and self._jwks_uri == uri and fresh and not force:
+                return self._jwks
+            async with self.http.get(
+                uri,
+                headers={"Accept": "application/json", "User-Agent": OIDC_USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status >= 400:
+                    raise jwt.PyJWKClientConnectionError(
+                        f"fetching JWKS from {uri} failed: HTTP {resp.status}"
+                    )
+                data = await resp.json(content_type=None)
+            self._jwks = jwt.PyJWKSet.from_dict(data)
+            self._jwks_uri = uri
+            self._jwks_at = time.time()
+            return self._jwks
+
+    async def _signing_key(self, id_token: str, uri: str) -> jwt.PyJWK:
+        """Find the JWK for this token's `kid`, refetching once if keys were rotated."""
+        kid = jwt.get_unverified_header(id_token).get("kid")
+
+        def pick(keyset: jwt.PyJWKSet) -> jwt.PyJWK | None:
+            keys = [k for k in keyset.keys if getattr(k, "public_key_use", None) in (None, "sig")]
+            if kid is None:
+                return keys[0] if len(keys) == 1 else None
+            return next((k for k in keys if k.key_id == kid), None)
+
+        key = pick(await self._load_jwks(uri))
+        if key is None and time.time() - self._jwks_at > JWKS_MIN_REFETCH:
+            key = pick(await self._load_jwks(uri, force=True))
+        if key is None:
+            raise jwt.PyJWKClientError(f"no signing key matching kid {kid!r} in JWKS")
+        return key
 
     async def login_redirect(self, request: web.Request) -> web.Response:
         if not self.config.oidc_enabled:
@@ -335,7 +380,9 @@ class AuthManager:
         }
         if self.config.oidc_client_secret:
             data["client_secret"] = self.config.oidc_client_secret
-        async with self.http.post(disc["token_endpoint"], data=data) as resp:
+        async with self.http.post(
+            disc["token_endpoint"], data=data, headers={"User-Agent": OIDC_USER_AGENT}
+        ) as resp:
             body = await resp.json(content_type=None)
             if resp.status >= 400:
                 LOGGER.warning("Token exchange failed: %s", body)
@@ -355,7 +402,8 @@ class AuthManager:
         if access_token := body.get("access_token"):
             if userinfo_ep := disc.get("userinfo_endpoint"):
                 async with self.http.get(
-                    userinfo_ep, headers={"Authorization": f"Bearer {access_token}"}
+                    userinfo_ep,
+                    headers={"Authorization": f"Bearer {access_token}", "User-Agent": OIDC_USER_AGENT},
                 ) as resp:
                     if resp.status < 400:
                         userinfo = await resp.json(content_type=None)
