@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import re
 import secrets
 import time
@@ -428,9 +429,20 @@ async def player_action(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
     action = request.match_info["action"]
-    await e.auth.require(request, "playback_skip" if action == "skip" else "playback_pause")
+    perm = "playback_skip" if action in ("skip", "previous", "seek") else "playback_pause"
+    await e.auth.require(request, perm)
     if action == "skip":
         e.engine.skip()
+    elif action == "previous":
+        result = await e.party.previous()
+        return web.json_response({"ok": True, "result": result})
+    elif action == "seek":
+        data = await body(request)
+        pos = data.get("position")
+        if isinstance(pos, bool) or not isinstance(pos, (int, float)) or not math.isfinite(pos):
+            raise ApiError(400, "position must be a number of seconds")
+        if not e.engine.seek(float(pos)):
+            raise ApiError(409, "Nothing is playing")
     elif action == "pause":
         await e.engine.pause()
     elif action == "resume":

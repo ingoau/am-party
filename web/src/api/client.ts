@@ -102,6 +102,8 @@ export const api = {
   queueRemove: (id: number) => command("DELETE", `/api/admin/queue/${id}`),
   queueMove: (id: number, index: number) => command("POST", `/api/admin/queue/${id}/move`, { index }),
   skip: () => command("POST", "/api/admin/player/skip", {}),
+  previous: () => request<{ ok: boolean; result: "restart" | "previous" }>("POST", "/api/admin/player/previous", {}),
+  seek: (position: number) => command("POST", "/api/admin/player/seek", { position }),
   pause: () => command("POST", "/api/admin/player/pause", {}),
   resume: () => command("POST", "/api/admin/player/resume", {}),
 

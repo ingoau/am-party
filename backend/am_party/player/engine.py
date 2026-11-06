@@ -134,6 +134,11 @@ class Engine:
         self.last_error: str | None = None
         self._wake = asyncio.Event()
         self._skip = asyncio.Event()
+        # skip that must re-pick the next track from the party (e.g. "previous" put a
+        # track in front of one that was already locked in / being mixed in)
+        self._requeue = False
+        # pending seek target (seconds into `now`) while playing
+        self._seek: float | None = None
         self._task: asyncio.Task | None = None
         self._prefetch_task: asyncio.Task | None = None
         self._handover_handles: list[asyncio.TimerHandle] = []
@@ -162,9 +167,29 @@ class Engine:
         self._wake.set()
         self.schedule_prefetch()
 
-    def skip(self) -> None:
+    def skip(self, requeue: bool = False) -> None:
+        """Skip the audible track. `requeue`: ask the party what's next instead of
+        continuing with a track that was already locked in."""
+        if requeue:
+            self._requeue = True
         self._skip.set()
         self._wake.set()
+
+    def seek(self, pos_s: float) -> bool:
+        """Jump within the current track. Returns False if nothing is playing."""
+        if not self.now:
+            return False
+        item = self.now.prepared
+        pos_s = max(0.0, min(float(pos_s), max(0.0, item.duration - 1.0)))
+        self._seek = pos_s
+        if self.paused and self._paused_pos is not None:
+            # resume() continues from the frozen position
+            self._freeze(self.now.candidate, item, pos_s)
+        else:
+            # report the new position right away; the handover fixes the exact clock
+            self.now.started_at = time.time() - pos_s
+            self._wake.set()
+        return True
 
     async def pause(self) -> None:
         if not self.paused:
@@ -247,11 +272,13 @@ class Engine:
             await self._set_idle()
             await self._wait_wake(5)
         self._skip.clear()
+        self._requeue = False
+        self._seek = None
         cand = self.hooks.peek_next()
         assert cand
         self.locked = cand
         item = await self._ensure_decoded(cand)
-        if item is None:
+        if item is None or self._requeue:
             return
         # pause/resume and interrupted transitions come back here instead of recursing
         resume: _Resume | None = _Resume(cand, item, 0)
@@ -272,8 +299,11 @@ class Engine:
             self._paused_pos = None
             await self.hooks.on_engine_state()
 
-    async def _drain_and_idle(self, started_at: float | None, item: PreparedTrack) -> None:
-        """Stream ran out of tracks: let the last one finish audibly, then go idle."""
+    async def _drain_and_idle(self, started_at: float | None, item: PreparedTrack) -> _Resume | None:
+        """Stream ran out of tracks: let the last one finish audibly, then go idle.
+
+        Returns where to continue if the last track was seeked while it finished.
+        """
         was_active = self._stream_active
         await self._end(drain=True)
         self.locked = None
@@ -281,18 +311,26 @@ class Engine:
             remaining = started_at + item.duration - time.time()
             if remaining > 0:
                 await self._wait_wake(min(remaining, 15))
+        if self._seek is not None and self.now and not self.paused and not self._skip.is_set():
+            seek, self._seek = self._seek, None
+            await self._end(drain=False)
+            return _Resume(self.now.candidate, self.now.prepared, seconds_to_bytes(seek))
         if not self.inflight:
             await self._set_idle()
+        return None
 
     async def _ensure_decoded(self, cand: Candidate, timeout: float = SKIP_WAIT_DECODE) -> PreparedTrack | None:
         item = self.preparer.prepare(cand.track)
         end = time.monotonic() + timeout
         while not item.decoded.is_set() and (left := end - time.monotonic()) > 0:
             await self.preparer.wait_decoded(item, min(left, 0.25))
-            if self._stream_active and self._interrupted():
+            if self._stream_active and (self.paused or self._skip.is_set()):
                 # pause/skip pressed while the previous track's last buffered audio
                 # plays and we wait for this one: stop that audio now
                 await self._stop_audible()
+            if self._requeue or (self._seek is not None and self._stream_active):
+                # "previous" or a seek: the caller handles it without this track
+                return None
         ok = item.ok
         if not ok:
             err = item.error or "timed out preparing track"
@@ -358,7 +396,7 @@ class Engine:
         return first, written, False
 
     def _interrupted(self) -> bool:
-        return self.paused or self._skip.is_set()
+        return self.paused or self._skip.is_set() or self._seek is not None
 
     def _is_current(self, cand: Candidate, started_at: float | None) -> bool:
         return started_at is not None or bool(self.now and self.now.candidate is cand)
@@ -440,15 +478,22 @@ class Engine:
                 if nxt is None:
                     nxt = self._lock_next()
                 if nxt is None:
-                    await self._drain_and_idle(started_at, item)
-                    return None
+                    return await self._drain_and_idle(started_at, item)
                 nitem = await self._ensure_decoded(nxt)
-                if nitem is None:
+                if nitem is None and not self._requeue and self._seek is None:
                     # try whatever is next now
                     nxt = self._lock_next()
-                    if nxt is None or (nitem := await self._ensure_decoded(nxt)) is None:
-                        await self._drain_and_idle(started_at, item)
-                        return None
+                    if nxt is not None:
+                        nitem = await self._ensure_decoded(nxt)
+                if self._seek is not None and not self._requeue:
+                    # seek pressed while the last buffered audio plays: it is for `cand`
+                    return await self._interrupt(cand, item, started_at, pos)
+                if nitem is None and not self._requeue:
+                    return await self._drain_and_idle(started_at, item)
+                if self._requeue:
+                    # "previous" changed what comes next while we waited for `nxt`
+                    self.locked = None
+                    return None
                 self.last_transition = "gapless"
                 cand, item, pos, started_at = nxt, nitem, 0, None
                 continue
@@ -484,7 +529,7 @@ class Engine:
                     return await self._interrupt(
                         nxt, nitem, next_started, seconds_to_bytes(res.in_position_at_end)
                     )
-                if self._skip.is_set() and not self.paused:
+                if self._skip.is_set() and not self.paused and not self._requeue:
                     # skip pressed while the outgoing song was still "now playing":
                     # jump straight into the incoming song where it is right now
                     self._skip.clear()
@@ -633,7 +678,19 @@ class Engine:
         for what was heard). Returns where to resume, or None after a skip.
         """
         current = bool(self.now and self.now.candidate is cand)
-        if current and self.paused and self._paused_pos is not None:
+        seek, self._seek = self._seek, None
+        if self.now and seek is not None and not self._skip.is_set():
+            # seek always targets the audible track
+            cand, item, current = self.now.candidate, self.now.prepared, True
+            pos = seconds_to_bytes(seek)
+            if self.paused:
+                self._paused_pos = seek  # paused right after seeking: stay there
+            else:
+                await self._end(drain=False)
+                self._cancel_handovers()
+                self.locked = None
+                return _Resume(cand, item, min(pos, item.size))
+        elif current and self.paused and self._paused_pos is not None:
             # pause() snapshotted what was heard at the moment it was pressed
             pos = min(pos, seconds_to_bytes(self._paused_pos))
         elif started_at is not None:
@@ -653,6 +710,8 @@ class Engine:
             if self.now:
                 LOGGER.info("Skipping %s", self.now.candidate.track.title)
             await self._finish_current()
+            if self._requeue:
+                return None
             return _Resume(cand, item, pos)
         # pause: remember the audible position and wait
         if not current:
@@ -667,7 +726,10 @@ class Engine:
                 LOGGER.info("Skipping %s", cand.track.title)
                 await self._finish_current()
                 return None
-        return _Resume(cand, item, pos)
+        if self._paused_pos is not None:
+            pos = seconds_to_bytes(self._paused_pos)  # seek() while paused moves it
+        self._seek = None
+        return _Resume(cand, item, max(0, min(pos, item.size)))
 
     async def _finish_current(self) -> None:
         self.now = None

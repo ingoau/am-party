@@ -13,7 +13,7 @@ export const FALLBACK_CATALOG: PermissionInfo[] = [
   { id: "queue_add", label: "Add to queue", description: "Add songs straight to the queue without approval", group: "Queue" },
   { id: "queue_reorder", label: "Reorder queue", description: "Move songs around in the queue", group: "Queue" },
   { id: "queue_remove", label: "Remove from queue", description: "Take songs out of the queue", group: "Queue" },
-  { id: "playback_skip", label: "Skip songs", description: "Skip the current song for every device", group: "Playback" },
+  { id: "playback_skip", label: "Skip songs", description: "Skip, go back or seek within the current song for every device", group: "Playback" },
   { id: "playback_pause", label: "Pause & resume", description: "Pause and resume playback for every device", group: "Playback" },
 ];
 

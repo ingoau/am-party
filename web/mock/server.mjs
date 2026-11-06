@@ -115,7 +115,7 @@ const PERMISSIONS = [
   { id: "queue_add", label: "Add to queue", description: "Add songs straight to the queue without approval", group: "Queue" },
   { id: "queue_reorder", label: "Reorder queue", description: "Move songs around in the queue", group: "Queue" },
   { id: "queue_remove", label: "Remove from queue", description: "Take songs out of the queue", group: "Queue" },
-  { id: "playback_skip", label: "Skip songs", description: "Skip the current song for every device", group: "Playback" },
+  { id: "playback_skip", label: "Skip songs", description: "Skip, go back or seek within the current song for every device", group: "Playback" },
   { id: "playback_pause", label: "Pause & resume", description: "Pause and resume playback for every device", group: "Playback" },
 ];
 const PERM_IDS = PERMISSIONS.map((p) => p.id);
@@ -162,7 +162,9 @@ function state() {
   };
 }
 
+const played = []; // back stack for "previous"
 function advance() {
+  if (nowPlaying) played.push(nowPlaying);
   const next = upcoming.shift();
   if (next) nowPlaying = { track: next.track, queue_item_id: next.id, source: next.source, started_at: now() };
   else {
@@ -434,9 +436,23 @@ const server = http.createServer(async (req, res) => {
     broadcastState();
     return json(res, 200, {});
   }
-  if ((m = p.match(/^\/api\/admin\/player\/(skip|pause|resume)$/)) && req.method === "POST") {
-    if (!need(m[1] === "skip" ? "playback_skip" : "playback_pause")) return;
+  if ((m = p.match(/^\/api\/admin\/player\/(skip|pause|resume|previous|seek)$/)) && req.method === "POST") {
+    if (!need(["skip", "previous", "seek"].includes(m[1]) ? "playback_skip" : "playback_pause")) return;
+    const pos = () => (paused ? pausedAt : now()) - nowPlaying.started_at;
     if (m[1] === "skip") { paused = false; advance(); }
+    else if (m[1] === "previous") {
+      if (!nowPlaying) return err(res, 409, "Nothing is playing");
+      if (pos() > 3 || !played.length) nowPlaying.started_at = (paused ? pausedAt : now());
+      else {
+        upcoming.unshift({ id: nextId++, track: nowPlaying.track, source: nowPlaying.source, request_id: null });
+        nowPlaying = { ...played.pop(), started_at: paused ? pausedAt : now() };
+      }
+    } else if (m[1] === "seek") {
+      const body = await readBody(req);
+      if (!nowPlaying) return err(res, 409, "Nothing is playing");
+      const to = Math.max(0, Math.min(Number(body.position) || 0, nowPlaying.track.duration - 1));
+      nowPlaying.started_at = (paused ? pausedAt : now()) - to;
+    }
     else if (m[1] === "pause" && !paused) { paused = true; pausedAt = now(); }
     else if (m[1] === "resume" && paused) { paused = false; nowPlaying.started_at += now() - pausedAt; }
     broadcastState();

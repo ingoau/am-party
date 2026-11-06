@@ -427,6 +427,47 @@ img {
 .progress--compact .progress__track {
   height: 3px;
 }
+/* Seekable variant: an invisible range input over the bar gives a big hit area and keyboard
+ * support; the fill shows where it will seek to while dragging. */
+.progress__track--seek {
+  overflow: visible;
+  cursor: pointer;
+}
+.progress__track--seek .progress__fill {
+  border-radius: inherit;
+}
+.progress__track--seek .progress__fill::after {
+  content: "";
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.progress__track--seek:hover .progress__fill::after,
+.progress__track--seek:focus-within .progress__fill::after {
+  opacity: 1;
+}
+.progress__track--seek:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 6px;
+}
+.progress__input {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -10px;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
 
 /* ---------- Forms ---------- */
 .field {

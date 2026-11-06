@@ -67,7 +67,7 @@ PERMISSIONS: dict[str, dict[str, str]] = {
     },
     "playback_skip": {
         "label": "Skip songs",
-        "description": "Skip the current song for every device",
+        "description": "Skip, go back or seek within the current song for every device",
         "group": "Playback",
     },
     "playback_pause": {
