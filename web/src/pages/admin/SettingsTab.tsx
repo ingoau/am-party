@@ -71,7 +71,15 @@ export function SettingsTab() {
     setSaveState("saving");
     try {
       const s = await api.patchSettings(patch);
-      const next = s && typeof s === "object" && "party_name" in s ? s : { ...saved, ...patch };
+      const next: Settings = s && typeof s === "object" && "party_name" in s ? s : { ...saved, ...patch };
+      // The server trims and collapses whitespace in text fields. If that's the only difference,
+      // keep the host's text as typed so a pause after a space doesn't eat it mid-sentence.
+      (Object.keys(patch) as (keyof Settings)[]).forEach((k) => {
+        const v = sent[k];
+        if (typeof v === "string" && v !== next[k] && v.trim().replace(/\s+/g, " ") === next[k]) {
+          (next as Record<string, unknown>)[k] = v;
+        }
+      });
       savedRef.current = next;
       // Keep anything edited while the request was in flight.
       const cur = draftRef.current ?? sent;
