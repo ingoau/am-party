@@ -1,8 +1,12 @@
 **/node_modules
 **/__pycache__
+**/*.pyc
+.venv
+**/.venv
+.env
 web/dist
 data
 secrets
+docs
 .git
-backend/tests
 web/mock

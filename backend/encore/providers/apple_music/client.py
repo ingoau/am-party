@@ -12,6 +12,7 @@ library-only/unplayable items; no MA cache (only the 1h decryption-key cache).
 from __future__ import annotations
 
 import logging
+import re
 
 import aiohttp
 
@@ -22,6 +23,16 @@ from .errors import MediaNotFound
 from .helpers.utils import is_catalog_id, is_library_id
 from .parsers import parse_playlist, parse_playlist_ref, parse_track
 from .streaming import AppleMusicStreamingManager
+
+# Track ids end up in Apple API URL paths: only plain catalog / library ids.
+_TRACK_ID_RE = re.compile(r"(?:[0-9]{1,20}|[ailp]\.[A-Za-z0-9]{1,64})", re.ASCII)
+_PLAYLIST_ID_STRICT_RE = re.compile(r"(?:pl\.[A-Za-z0-9_-]{1,128}|p\.[A-Za-z0-9]{1,128})", re.ASCII)
+
+
+def _require_track_id(track_id: object) -> None:
+    if not isinstance(track_id, str) or not _TRACK_ID_RE.fullmatch(track_id):
+        raise ProviderError(f"Invalid Apple Music track id: {str(track_id)[:80]!r}")
+
 
 _SEARCH_PAGE_SIZE = 25  # Apple's max for catalog search
 _PLAYLIST_TRACKS_PAGE_SIZE = 100
@@ -134,6 +145,7 @@ class AppleMusicClient:
 
     async def get_track(self, track_id: str) -> Track:
         """Return a catalog track. Library song ids (i.*) are resolved to their catalog song."""
+        _require_track_id(track_id)
         storefront = await self._ensure_ready()
         if is_library_id(track_id):
             response = await self.api.get_data(
@@ -207,7 +219,7 @@ class AppleMusicClient:
 
     def _require_playlist_id(self, url_or_id: str) -> str:
         playlist_id = parse_playlist_ref(url_or_id)
-        if playlist_id is None:
+        if playlist_id is None or not _PLAYLIST_ID_STRICT_RE.fullmatch(playlist_id):
             raise ProviderError(f"Not an Apple Music playlist reference: {url_or_id!r}")
         return playlist_id
 
@@ -215,5 +227,6 @@ class AppleMusicClient:
 
     async def get_stream(self, track_id: str) -> StreamInfo:
         """Resolve a catalog track id to an encrypted fMP4 URL + hex content key."""
+        _require_track_id(track_id)
         await self._ensure_ready()
         return await self.streaming.get_stream(track_id)

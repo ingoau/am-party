@@ -22,15 +22,23 @@ queue/requests/fallback playlist ─► engine ─► smart/standard crossfade r
 
 ```sh
 cp .env.example .env      # set ENCORE_PUBLIC_URL and the OIDC_* values
+mkdir -p data secrets     # create these yourself so they aren't created root-owned
 docker compose up -d --build
+docker compose logs -f    # WARN lines tell you if OIDC / Apple Music still need setup
 ```
+
+The container starts as root only long enough to hand a root-owned `./data` to uid 1000,
+then drops privileges (`setpriv`). If you run it with `user:` set and `./data` isn't
+writable, it exits with the `chown` command to fix it. Logs are capped (json-file, 3 x
+10 MB); `compose.yaml` has commented-out `mem_limit`/`cpus` caps and a LAN Sendspin port.
 
 Then:
 
 1. Register an OIDC client with your provider (Authentik, Pocket ID, Keycloak, Authelia, Google…):
    - redirect URI: `${ENCORE_PUBLIC_URL}/auth/callback`
    - scopes: `openid profile email`; confidential client (secret) or public client with PKCE both work
-2. Open `${ENCORE_PUBLIC_URL}/admin` and sign in — you're the admin.
+   - **restrict who can log in at the provider** (bind the app to a group / user list). Encore trusts every identity the provider vouches for.
+2. Set `ENCORE_ADMIN_EMAILS=you@example.com` (recommended), then open `${ENCORE_PUBLIC_URL}/admin` and sign in. Without `ENCORE_ADMIN_EMAILS` the *first* person to sign in becomes admin (the log shows a warning until someone has).
 3. **Settings → Apple Music**: click **Connect Apple Music** and sign in with your Apple ID (MusicKit, same flow as Music Assistant). Or provide tokens as files, see below.
 4. **Settings → Fallback playlist**: pick one of your playlists or paste an Apple Music playlist link.
 5. Open `/` on the TVs/speakers, tap **Listen**. Guests scan the QR code.
@@ -57,18 +65,35 @@ Apple allows one concurrent stream per account — don't play the same account e
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | — | generic OIDC; `*_FILE` variants supported |
 | `OIDC_PROVIDER_NAME` | `SSO` | label on the sign-in button |
 | `OIDC_SCOPES` | `openid profile email` | |
+| `ENCORE_ADMIN_EMAILS` | — | comma-separated emails that become admin when they sign in (email must not be `email_verified: false`). When set, the "first user becomes admin" rule is off. |
+| `ENCORE_ALLOWED_EMAILS`, `ENCORE_ALLOWED_DOMAINS` | — | optional sign-in allowlists (comma-separated; e.g. `example.org`). Anyone else gets a 403 page. Admin emails are always allowed. |
+| `ENCORE_TRUSTED_PROXY` | unset | `cloudflare` (use `CF-Connecting-IP`) or `x-forwarded-for` (right-most entry) — only when Encore is reachable **solely** through that proxy; otherwise clients could spoof their IP. Unset = the socket address. |
+| `ENCORE_IP_SEARCHES_PER_MINUTE` | `120` | guest searches per client IP per minute |
+| `ENCORE_IP_MAX_PENDING` | `20` | pending guest requests per client IP |
+| `ENCORE_MAX_LISTENERS` | `100` | max concurrent `/sendspin` connections |
+| `ENCORE_SENDSPIN_PORT` | unset (off) | also run the native Sendspin listener on this port (plain `ws://`, for hardware players on the LAN; publish it in compose) |
 | `ENCORE_HOST_PORT` | `8930` | host port in compose |
 | `ENCORE_LOG_LEVEL` | `INFO` | |
 
-Sendspin hardware players on the LAN can also connect directly to port 8927 (publish it in compose if you want that).
+### Security notes
+
+- **Who can sign in** is decided by your OIDC provider: restrict the Encore application to the people who should manage the party. Use `ENCORE_ADMIN_EMAILS` so nobody can claim admin by signing in first, and optionally `ENCORE_ALLOWED_EMAILS`/`ENCORE_ALLOWED_DOMAINS` as a second gate.
+- **Guests** get a server-signed anonymous cookie (HMAC with the session secret). Guest searches and requests are rate limited per guest, per client IP and globally (600 searches/min, 200 pending requests in total). Everyone on the party wifi usually shares one public IP, so per-IP limits are deliberately loose; raise them for big parties. Behind Cloudflare Tunnel or a reverse proxy set `ENCORE_TRUSTED_PROXY`, or every guest shares the proxy's address.
+- Sessions last at most 30 days and expire after 7 days unused. Signing out closes that session's live connections.
+- Live-update websockets are capped per IP (100) and in total (500); `/sendspin` per IP (50) and in total (`ENCORE_MAX_LISTENERS`).
+- Responses carry a strict Content-Security-Policy (`script-src 'self'`), `X-Frame-Options: DENY` and HSTS when `ENCORE_PUBLIC_URL` is https.
 
 ## Development
 
 - Backend: Python 3.14, aiohttp (`backend/encore`). Tests: `backend/tests` (engine, Apple Music parsers, Sendspin, smart fades).
   ```sh
-  docker build -t encore:local .
-  docker run --rm -v $PWD/backend:/app -w /app --entrypoint python encore:local -m pytest tests/engine tests/smartfades
+  docker build --target test -t encore:test .   # runtime image + pytest, tests baked in
+  docker run --rm encore:test                     # runs the whole suite
+  # against your working tree without rebuilding:
+  docker run --rm -v $PWD/backend:/app -w /app encore:test python -m pytest -q -p no:cacheprovider tests
   ```
+  Python dependencies: `backend/requirements.txt` (runtime, the only source of truth) and
+  `backend/requirements-dev.txt` (tests).
 - Frontend: Vite + React (`web/`). `npm run dev` proxies to `localhost:8930`; `web/mock/server.mjs` is a dependency-free mock backend.
 - API contract: [docs/API.md](docs/API.md).
 

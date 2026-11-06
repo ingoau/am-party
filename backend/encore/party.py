@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
+import math
 import random
 import time
 from collections import OrderedDict, deque
@@ -16,6 +18,7 @@ from aiohttp import web
 from .db import Database, now
 from .models import NotConfigured, ProviderError, Track
 from .player.engine import Candidate, NowPlaying
+from .security import SlidingWindow, TTLCache, valid_track_id
 
 if TYPE_CHECKING:
     from .auth import User
@@ -26,6 +29,19 @@ LOGGER = logging.getLogger(__name__)
 TRACK_CACHE_SIZE = 5000
 RECENT_FALLBACK = 30
 FALLBACK_REFRESH = 3600
+HISTORY_KEEP = 1000  # play history rows kept
+WS_SEND_TIMEOUT = 5.0  # a client that can't take a message this fast is dropped
+MIN_POSITION_GAP = 1e-6  # renumber queue positions before floats collapse
+
+# Guest abuse limits. Per-IP limits are deliberately looser than per-guest ones:
+# everyone on the party wifi usually shares one public IP.
+GUEST_SEARCH_PER_MIN = 30
+IP_SEARCH_PER_MIN = 120
+TOTAL_GUEST_SEARCH_PER_MIN = 600
+IP_MAX_PENDING = 20
+IP_REQUEST_COOLDOWN = 2.0
+MAX_PENDING_TOTAL = 200
+RATE_KEYS_MAX = 20_000  # bound on remembered guests / IPs per limiter
 
 
 class ApiError(Exception):
@@ -42,18 +58,40 @@ class Hub:
 
     def __init__(self) -> None:
         self.clients: dict[web.WebSocketResponse, User | None] = {}
+        self._closing: set[asyncio.Task] = set()
 
     async def send_all(self, msg: dict[str, Any], permission: str | None = None) -> None:
+        """Send to every allowed client concurrently; one slow client can't stall the rest."""
         data = json.dumps(msg)
-        for ws, user in list(self.clients.items()):
-            if permission == "signed_in" and not user:
-                continue
-            if permission and permission != "signed_in" and not (user and user.has(permission)):
-                continue
-            try:
-                await ws.send_str(data)
-            except (ConnectionResetError, RuntimeError):
-                self.clients.pop(ws, None)
+        targets = [ws for ws, user in list(self.clients.items()) if _allowed(user, permission)]
+        if targets:
+            await asyncio.gather(*(self._send(ws, data) for ws in targets))
+
+    async def _send(self, ws: web.WebSocketResponse, data: str) -> None:
+        try:
+            await asyncio.wait_for(ws.send_str(data), WS_SEND_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - dead or stuck socket
+            self.clients.pop(ws, None)
+            if isinstance(err, TimeoutError) and not ws.closed:
+                # stuck client: close it so it reconnects and gets a fresh state
+                task = asyncio.create_task(self._close(ws))
+                self._closing.add(task)
+                task.add_done_callback(self._closing.discard)
+
+    @staticmethod
+    async def _close(ws: web.WebSocketResponse) -> None:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(ws.close(code=1013, message=b"too slow"), WS_SEND_TIMEOUT)
+
+
+def _allowed(user: User | None, permission: str | None) -> bool:
+    if permission == "signed_in":
+        return user is not None
+    if permission:
+        return bool(user and user.has(permission))
+    return True
 
 
 class Party:
@@ -73,11 +111,21 @@ class Party:
         self.recent_ids: deque[str] = deque(maxlen=RECENT_FALLBACK)
         self.listeners = 0
         self._state_pending = False
-        self._guest_last_request: dict[str, float] = {}
-        self._guest_searches: dict[str, deque[float]] = {}
+        # rate limiting (all bounded LRU/TTL maps; keys are guest ids or client IPs)
+        self.ip_search_per_min = IP_SEARCH_PER_MIN
+        self.ip_max_pending = IP_MAX_PENDING
+        self._guest_last_request: TTLCache[str, float] = TTLCache(RATE_KEYS_MAX, 3600)
+        self._ip_last_request: TTLCache[str, float] = TTLCache(RATE_KEYS_MAX, 3600)
+        self._ip_requests: TTLCache[str, list[int]] = TTLCache(RATE_KEYS_MAX, 24 * 3600)
+        self._guest_searches: SlidingWindow[str] = SlidingWindow(GUEST_SEARCH_PER_MIN, 60, RATE_KEYS_MAX)
+        self._ip_searches: SlidingWindow[str] = SlidingWindow(IP_SEARCH_PER_MIN, 60, RATE_KEYS_MAX)
+        self._all_searches: SlidingWindow[str] = SlidingWindow(TOTAL_GUEST_SEARCH_PER_MIN, 60, 1)
         self.apple_error: str | None = None
         self.public_url = ""
         self._fallback_lock = asyncio.Lock()
+        # fallback tracks played in the current pass through the (shuffled) playlist
+        self.fallback_played: set[str] = set()
+        self._tasks: set[asyncio.Task] = set()  # background work, awaited on close()
 
     # -- lifecycle --------------------------------------------------------------
     async def load(self) -> None:
@@ -88,6 +136,24 @@ class Party:
             self._cache_track(q["track"])
         for r in await self.db.fetchall("SELECT track_id FROM history ORDER BY id DESC LIMIT ?", RECENT_FALLBACK):
             self.recent_ids.appendleft(r["track_id"])
+
+    def _spawn(self, coro: Any, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+        return task
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and (err := task.exception()) is not None:
+            LOGGER.error("Background task %s failed", task.get_name(), exc_info=err)
+
+    async def close(self) -> None:
+        """Cancel and await background work (call before closing the database)."""
+        tasks = list(self._tasks)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def connect_apple(self) -> None:
         try:
@@ -151,6 +217,11 @@ class Party:
             cand.source,
             now(),
         )
+        await self.db.execute(
+            "DELETE FROM history WHERE id <= "
+            "(SELECT id FROM history ORDER BY id DESC LIMIT 1 OFFSET ?)",
+            HISTORY_KEEP,
+        )
         self.recent_ids.append(cand.track.id)
         LOGGER.info("Now playing: %s - %s [%s]", cand.track.artist, cand.track.title, cand.source)
         self.changed()
@@ -184,14 +255,47 @@ class Party:
                 LOGGER.warning("Loading fallback playlist failed: %s", err)
                 self.fallback_error = str(err)
                 return
-            self.fallback_tracks = tracks
             for t in tracks:
                 self._cache_track(t)
-            self._reshuffle()
+            self._set_fallback_tracks(tracks)
             self.fallback_loaded_at = time.time()
             LOGGER.info("Loaded fallback playlist with %d tracks", len(tracks))
         if self.engine:
             self.engine.poke()
+
+    def _set_fallback_tracks(self, tracks: list[Track]) -> None:
+        """Install a (re)loaded playlist without disturbing the current pass.
+
+        The hourly refresh usually returns the same tracks: then only the Track objects
+        are swapped. Otherwise tracks already played this pass stay "played", removed
+        ones drop out and new ones join the not-yet-played part of the order.
+        """
+        old_ids = [t.id for t in self.fallback_tracks]
+        new_ids = [t.id for t in tracks]
+        if new_ids == old_ids:
+            self.fallback_tracks = tracks
+            return
+        if not old_ids:
+            self.fallback_tracks = tracks
+            self.fallback_played.clear()
+            self._reshuffle()
+            return
+        index = {tid: i for i, tid in enumerate(new_ids)}
+        old_order = [old_ids[i] for i in self.fallback_order]
+        done = [tid for tid in old_order[: self.fallback_ptr] if tid in index]
+        todo = [tid for tid in old_order[self.fallback_ptr :] if tid in index]
+        known = set(done) | set(todo)
+        fresh = [tid for tid in new_ids if tid not in known]
+        self.fallback_tracks = tracks
+        self.fallback_played &= set(new_ids)
+        if self._settings.get("fallback_shuffle", True):
+            todo += fresh
+            random.shuffle(todo)
+            order = done + todo
+        else:
+            order = list(new_ids)  # playlist order; played ones are skipped by the set
+        self.fallback_order = [index[tid] for tid in order]
+        self.fallback_ptr = len(done) if self._settings.get("fallback_shuffle", True) else 0
 
     def _reshuffle(self) -> None:
         self.fallback_order = list(range(len(self.fallback_tracks)))
@@ -206,11 +310,16 @@ class Party:
         queued = {q["track"].id for q in self.queue} | self._inflight()[1]
         current = self.engine.now.candidate.track.id if self.engine and self.engine.now else None
         recent = set(self.recent_ids) if n > len(self.recent_ids) + 1 else set()
+        played = self.fallback_played
         for i in range(n):
             t = self.fallback_tracks[self.fallback_order[(self.fallback_ptr + i) % n]]
-            if t.id in queued or t.id == current or t.id in recent:
+            if t.id in queued or t.id == current or t.id in recent or t.id in played:
                 continue
             return t
+        for i in range(n):
+            t = self.fallback_tracks[self.fallback_order[(self.fallback_ptr + i) % n]]
+            if t.id not in queued and t.id != current and t.id not in played:
+                return t
         # everything filtered: just take the next one that isn't playing right now
         for i in range(n):
             t = self.fallback_tracks[self.fallback_order[(self.fallback_ptr + i) % n]]
@@ -220,12 +329,19 @@ class Party:
 
     def _advance_fallback(self, track_id: str) -> None:
         n = len(self.fallback_order)
+        ids = {t.id for t in self.fallback_tracks}
+        if track_id not in ids:
+            return  # removed from the playlist by a reload meanwhile
+        self.fallback_played.add(track_id)
+        if ids <= self.fallback_played:
+            # every track had its turn: start a new pass in a new order
+            self.fallback_played.clear()
+            self._reshuffle()
+            return
         for i in range(n):
             idx = (self.fallback_ptr + i) % n
             if self.fallback_tracks[self.fallback_order[idx]].id == track_id:
-                self.fallback_ptr = idx + 1
-                if self.fallback_ptr >= n:
-                    self._reshuffle()
+                self.fallback_ptr = (idx + 1) % n
                 return
 
     async def fallback_refresher(self) -> None:
@@ -240,7 +356,7 @@ class Party:
         if self._state_pending:
             return
         self._state_pending = True
-        asyncio.get_running_loop().call_later(0.05, lambda: asyncio.ensure_future(self._flush()))
+        asyncio.get_running_loop().call_later(0.05, lambda: self._spawn(self._flush(), "state-flush"))
 
     async def _flush(self) -> None:
         self._state_pending = False
@@ -257,6 +373,7 @@ class Party:
                 "queue_item_id": c.queue_item_id,
                 "source": c.source,
                 "started_at": eng.now.started_at,
+                "position": round(eng.position(), 3),  # frozen while paused
             }
         upcoming = [
             {
@@ -304,19 +421,31 @@ class Party:
         if not self.apple.configured or self.apple_error:
             raise ApiError(503, "Music search isn't available right now")
 
-    async def search(self, q: str, guest: str | None = None) -> list[Track]:
+    def set_rate_limits(self, ip_search_per_min: int, ip_max_pending: int) -> None:
+        self.ip_search_per_min = ip_search_per_min
+        self.ip_max_pending = ip_max_pending
+        self._ip_searches = SlidingWindow(ip_search_per_min, 60, RATE_KEYS_MAX)
+
+    def _check_search_rate(self, guest: str | None, ip: str | None) -> None:
+        """Guest searches: per guest, per client IP and in total (all or nothing)."""
+        if not guest and not ip:
+            return
+        checks: list[tuple[SlidingWindow[str], str]] = [(self._all_searches, "*")]
+        if guest:
+            checks.append((self._guest_searches, guest))
+        if ip:
+            checks.append((self._ip_searches, ip))
+        if not all(limiter.allowed(key) for limiter, key in checks):
+            raise ApiError(429, "Slow down a little, try again in a minute")
+        for limiter, key in checks:
+            limiter.hit(key)
+
+    async def search(self, q: str, guest: str | None = None, ip: str | None = None) -> list[Track]:
         q = q.strip()[:100]
         if not q:
             return []
         self._require_apple()
-        if guest:
-            win = self._guest_searches.setdefault(guest, deque(maxlen=30))
-            t = time.time()
-            while win and t - win[0] > 60:
-                win.popleft()
-            if len(win) >= 30:
-                raise ApiError(429, "Slow down a little, try again in a minute")
-            win.append(t)
+        self._check_search_rate(guest, ip)
         try:
             tracks = await self.apple.search_tracks(q, limit=20)
         except ProviderError as err:
@@ -329,6 +458,8 @@ class Party:
     async def get_track(self, track_id: str) -> Track:
         if t := self.track_cache.get(track_id):
             return t
+        if not valid_track_id(track_id):
+            raise ApiError(400, "Invalid track id")
         self._require_apple()
         try:
             t = await self.apple.get_track(track_id)
@@ -355,7 +486,20 @@ class Party:
             out["guest_label"] = self.guest_label(r["guest_id"])
         return out
 
-    async def create_request(self, guest_id: str, track_id: str) -> dict[str, Any]:
+    async def _ip_pending(self, ip: str) -> list[int]:
+        """Ids of this IP's requests that are still pending."""
+        ids = self._ip_requests.get(ip) or []
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        rows = await self.db.fetchall(
+            f"SELECT id FROM requests WHERE status='pending' AND id IN ({marks})", *ids
+        )
+        return [r["id"] for r in rows]
+
+    async def create_request(
+        self, guest_id: str, track_id: str, ip: str | None = None
+    ) -> dict[str, Any]:
         s = self._settings
         if not s.get("requests_open", True):
             raise ApiError(403, "Requests are closed right now")
@@ -377,12 +521,24 @@ class Party:
         )
         if pending and pending["n"] >= int(s.get("max_pending_per_guest", 3)):
             raise ApiError(429, "You have too many requests waiting, hang tight")
+        total = await self.db.fetchone("SELECT COUNT(*) AS n FROM requests WHERE status='pending'")
+        if total and total["n"] >= MAX_PENDING_TOTAL:
+            raise ApiError(429, "Lots of requests are waiting already, try again in a bit")
+        ip_pending: list[int] = []
+        if ip:
+            ip_pending = await self._ip_pending(ip)
+            if len(ip_pending) >= self.ip_max_pending:
+                raise ApiError(429, "Too many requests waiting from your network, hang tight")
         cooldown = float(s.get("request_cooldown_seconds", 20))
-        last = self._guest_last_request.get(guest_id, 0)
+        last = self._guest_last_request.get(guest_id) or 0.0
         if time.time() - last < cooldown:
             wait = int(cooldown - (time.time() - last)) + 1
             raise ApiError(429, f"Please wait {wait}s before requesting another song")
-        self._guest_last_request[guest_id] = time.time()
+        if ip and time.time() - (self._ip_last_request.get(ip) or 0.0) < IP_REQUEST_COOLDOWN:
+            raise ApiError(429, "Please wait a moment before requesting another song")
+        self._guest_last_request.set(guest_id, time.time())
+        if ip:
+            self._ip_last_request.set(ip, time.time())
         auto = not s.get("require_approval", True)
         rid = await self.db.execute(
             "INSERT INTO requests(track_id, track, guest_id, status, created_at, decided_at) "
@@ -394,6 +550,8 @@ class Party:
             now(),
             now() if auto else None,
         )
+        if ip and not auto:
+            self._ip_requests.set(ip, [*ip_pending[-(self.ip_max_pending * 2) :], rid])
         if auto:
             await self._insert_queue(track, "request", "end", request_id=rid)
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)
@@ -449,14 +607,21 @@ class Party:
                 raise ApiError(409, "That song has already played")
             if item["id"] == self._locked_id():
                 raise ApiError(409, "Too late, that song is about to start")
-            await self.db.execute("DELETE FROM queue WHERE id=?", item["id"])
+            async with self.db.transaction():
+                await self.db.execute("DELETE FROM queue WHERE id=?", item["id"])
+                await self.db.execute(
+                    "UPDATE requests SET status='withdrawn', decided_at=? WHERE id=?", now(), rid
+                )
             self.queue = [q for q in self.queue if q["id"] != item["id"]]
             self._after_queue_change()
         elif row["status"] != "pending":
             raise ApiError(409, f"Request was already {row['status']}")
-        await self.db.execute(
-            "UPDATE requests SET status='withdrawn', decided_at=? WHERE id=?", now(), rid
-        )
+        elif not await self.db.execute_rowcount(
+            "UPDATE requests SET status='withdrawn', decided_at=? WHERE id=? AND status='pending'",
+            now(),
+            rid,
+        ):
+            raise ApiError(409, "That request was just decided, please refresh")
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
 
     async def list_requests(self, status: str | None) -> list[dict[str, Any]]:
@@ -478,19 +643,25 @@ class Party:
         rows = await self.db.fetchall("SELECT * FROM requests WHERE status='pending' ORDER BY id")
         if position == "next":
             rows.reverse()  # inserting each at "next" keeps oldest first
+        approved = 0
         for row in rows:
-            await self.db.execute(
-                "UPDATE requests SET status='approved', decided_by=?, decided_at=? WHERE id=?",
-                user.id if user else None,
-                now(),
-                row["id"],
-            )
-            track = Track.from_dict(json.loads(row["track"]))
-            if not any(q["track"].id == track.id for q in self.queue):
-                await self._insert_queue(track, "request", position, request_id=row["id"], user=user)
+            async with self.db.transaction():
+                # only if still pending: the guest may have withdrawn it meanwhile
+                if not await self.db.execute_rowcount(
+                    "UPDATE requests SET status='approved', decided_by=?, decided_at=? "
+                    "WHERE id=? AND status='pending'",
+                    user.id if user else None,
+                    now(),
+                    row["id"],
+                ):
+                    continue
+                approved += 1
+                track = Track.from_dict(json.loads(row["track"]))
+                if not any(q["track"].id == track.id for q in self.queue):
+                    await self._insert_queue(track, "request", position, request_id=row["id"], user=user)
         if rows:
             await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
-        return len(rows)
+        return approved
 
     async def set_require_approval(self, enabled: bool, user: User | None) -> int:
         """Turn approval on/off. Turning it off approves everything waiting."""
@@ -507,17 +678,21 @@ class Party:
         if row["status"] != "pending":
             raise ApiError(409, f"Request was already {row['status']}")
         status = "approved" if approve else "rejected"
-        await self.db.execute(
-            "UPDATE requests SET status=?, decided_by=?, decided_at=? WHERE id=?",
-            status,
-            user.id,
-            now(),
-            rid,
-        )
-        if approve:
-            track = Track.from_dict(json.loads(row["track"]))
-            if not any(q["track"].id == track.id for q in self.queue):
-                await self._insert_queue(track, "request", position, request_id=rid, user=user)
+        async with self.db.transaction():
+            if not await self.db.execute_rowcount(
+                "UPDATE requests SET status=?, decided_by=?, decided_at=? "
+                "WHERE id=? AND status='pending'",
+                status,
+                user.id,
+                now(),
+                rid,
+            ):
+                cur = await self.db.fetchone("SELECT status FROM requests WHERE id=?", rid)
+                raise ApiError(409, f"Request was already {(cur or {}).get('status', 'removed')}")
+            if approve:
+                track = Track.from_dict(json.loads(row["track"]))
+                if not any(q["track"].id == track.id for q in self.queue):
+                    await self._insert_queue(track, "request", position, request_id=rid, user=user)
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         out = await self.db.fetchone(
             "SELECT r.*, u.name AS decider_name FROM requests r "
@@ -540,34 +715,44 @@ class Party:
         request_id: int | None = None,
         user: User | None = None,
     ) -> None:
-        if position == "next" and self.queue:
-            locked = self._locked_id()
-            # never jump ahead of the track that is already being mixed in
-            first = self.queue[0]
-            if locked == first["id"] and len(self.queue) > 1:
-                pos = (first["position"] + self.queue[1]["position"]) / 2
-            elif locked == first["id"]:
-                pos = first["position"] + 1
+        async with self.db.transaction():
+            if position == "next" and self.queue:
+                locked = self._locked_id()
+                # never jump ahead of the track that is already being mixed in
+                first = self.queue[0]
+                if locked == first["id"] and len(self.queue) > 1:
+                    if self.queue[1]["position"] - first["position"] < MIN_POSITION_GAP:
+                        await self._renumber_queue()
+                    pos = (first["position"] + self.queue[1]["position"]) / 2
+                elif locked == first["id"]:
+                    pos = first["position"] + 1
+                else:
+                    pos = first["position"] - 1
             else:
-                pos = first["position"] - 1
-        else:
-            pos = (self.queue[-1]["position"] + 1) if self.queue else 1.0
-        qid = await self.db.execute(
-            "INSERT INTO queue(position, track_id, track, source, request_id, added_by, created_at) "
-            "VALUES(?,?,?,?,?,?,?)",
-            pos,
-            track.id,
-            json.dumps(track.to_dict()),
-            source,
-            request_id,
-            user.id if user else None,
-            now(),
-        )
+                pos = (self.queue[-1]["position"] + 1) if self.queue else 1.0
+            qid = await self.db.execute(
+                "INSERT INTO queue(position, track_id, track, source, request_id, added_by, created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                pos,
+                track.id,
+                json.dumps(track.to_dict()),
+                source,
+                request_id,
+                user.id if user else None,
+                now(),
+            )
         self.queue.append(
             {"id": qid, "position": pos, "track": track, "source": source, "request_id": request_id}
         )
         self.queue.sort(key=lambda q: (q["position"], q["id"]))
         self._after_queue_change()
+
+    async def _renumber_queue(self) -> None:
+        """Reset positions to 1..n (repeated "play next" halves the same gap)."""
+        async with self.db.transaction():
+            for i, q in enumerate(self.queue):
+                q["position"] = float(i + 1)
+                await self.db.execute("UPDATE queue SET position=? WHERE id=?", q["position"], q["id"])
 
     def _after_queue_change(self) -> None:
         if self.engine:
@@ -579,6 +764,8 @@ class Party:
         await self._insert_queue(track, "admin", position, user=user)
 
     async def remove_from_queue(self, qid: int) -> None:
+        if not any(q["id"] == qid for q in self.queue):
+            raise ApiError(404, "Queue item not found")
         if qid == self._locked_id():
             raise ApiError(409, "That song is already being mixed in; skip it once it starts")
         await self.db.execute("DELETE FROM queue WHERE id=?", qid)
@@ -596,10 +783,11 @@ class Party:
         min_index = 1 if rest and rest[0]["id"] == locked else 0
         index = max(min_index, min(index, len(rest)))
         rest.insert(index, item)
+        async with self.db.transaction():
+            for i, q in enumerate(rest):
+                await self.db.execute("UPDATE queue SET position=? WHERE id=?", float(i + 1), q["id"])
         for i, q in enumerate(rest):
             q["position"] = float(i + 1)
-            await self.db.c.execute("UPDATE queue SET position=? WHERE id=?", (q["position"], q["id"]))
-        await self.db.c.commit()
         self.queue = rest
         self._after_queue_change()
 
@@ -611,15 +799,22 @@ class Party:
                 if val not in ("smart", "standard", "off"):
                     raise ApiError(400, "Invalid crossfade mode")
             elif key == "crossfade_duration":
-                val = max(1, min(15, int(val)))
-            elif key in ("max_pending_per_guest", "request_cooldown_seconds"):
-                val = max(0, min(3600, int(val)))
+                val = _number(key, val, 1, 15)
+            elif key == "max_pending_per_guest":
+                val = _number(key, val, 1, 100)  # 0 would silently block every guest
+            elif key == "request_cooldown_seconds":
+                val = _number(key, val, 0, 3600)
             elif key in ("requests_open", "fallback_shuffle", "require_approval"):
-                val = bool(val)
+                if not isinstance(val, bool):
+                    raise ApiError(400, f"{key} must be true or false")
             elif key == "party_name":
-                val = str(val).strip()[:60] or "Encore"
+                if val is not None and not isinstance(val, str):
+                    raise ApiError(400, "party_name must be a string")
+                val = (val or "").strip()[:60] or "Encore"
             elif key in ("fallback_playlist_id", "fallback_playlist_name"):
-                val = (str(val).strip() or None) if val else None
+                if val is not None and not isinstance(val, str):
+                    raise ApiError(400, f"{key} must be a string or null")
+                val = (val.strip()[:200] or None) if val else None
             clean[key] = val
         if clean.get("require_approval") is False and self._settings.get("require_approval", True):
             clean.pop("require_approval")
@@ -628,10 +823,21 @@ class Party:
         old_shuffle = self._settings.get("fallback_shuffle")
         self._settings = await self.db.set_settings(clean)
         if self._settings.get("fallback_playlist_id") != old_pl:
-            asyncio.create_task(self.reload_fallback())
+            self.fallback_tracks, self.fallback_order, self.fallback_ptr = [], [], 0
+            self.fallback_played.clear()
+            self._spawn(self.reload_fallback(), "reload-fallback")
         elif self._settings.get("fallback_shuffle") != old_shuffle:
             self._reshuffle()
         if self.engine:
             self.engine.poke()
         self.changed()
         return self._settings
+
+
+def _number(key: str, val: Any, lo: int, hi: int) -> int:
+    """Strict numeric setting: a finite JSON number (not a bool/string/null) in [lo, hi]."""
+    if isinstance(val, bool) or not isinstance(val, int | float) or not math.isfinite(val):
+        raise ApiError(400, f"{key} must be a number")
+    if not lo <= val <= hi:
+        raise ApiError(400, f"{key} must be between {lo} and {hi}")
+    return round(val)

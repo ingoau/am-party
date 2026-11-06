@@ -50,12 +50,14 @@ from aiosendspin.server import (
     GroupMemberRemovedEvent,
     SendspinServer,
 )
+from aiosendspin.server.compliance import ClientComplianceError
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles import Role
 from aiosendspin.server.roles.metadata.state import Metadata
 from aiosendspin.server.roles.registry import register_role
 
 from encore.models import BYTES_PER_SECOND, CHANNELS, FRAME_SIZE, SAMPLE_RATE
+from encore.security import ConnectionCounter
 
 if TYPE_CHECKING:
     import aiohttp
@@ -64,6 +66,10 @@ if TYPE_CHECKING:
 
 ANCHOR_ROLE_ID = "player@_encore_anchor"
 ANCHOR_CLIENT_ID = "encore-party-anchor"
+# Client ids a connecting client may not claim (they'd hijack the party group's anchor).
+RESERVED_CLIENT_IDS = frozenset({ANCHOR_CLIENT_ID})
+DEFAULT_MAX_LISTENERS = 100
+DEFAULT_MAX_LISTENERS_PER_IP = 50  # party wifi usually shares one public IP
 
 SLICE_SECONDS = 0.1
 SLICE_BYTES = int(SAMPLE_RATE * SLICE_SECONDS) * FRAME_SIZE
@@ -109,6 +115,12 @@ class _TrustAllPairingStore(InMemoryServerPairingStore):
     """Pairing store that approves every client for unpaired (Sentinel) playback."""
 
     async def trusted_unpaired(self, client_id: str) -> TrustedUnpairedClient | None:
+        # Consulted for every hello right before the connection is bound to a client
+        # object (the client_id is only visible inside the Noise-encrypted channel, so
+        # it can't be checked earlier). Raising here makes the library drop the
+        # connection cleanly instead of attaching it to the anchor.
+        if client_id in RESERVED_CLIENT_IDS:
+            raise ClientComplianceError(f"reserved client id {client_id!r}")
         found = await super().trusted_unpaired(client_id)
         return found or TrustedUnpairedClient(client_id=client_id)
 
@@ -125,6 +137,8 @@ class SendspinOutput:
         *,
         buffer_ahead: float = 3.0,
         host: str = "0.0.0.0",
+        max_listeners: int = DEFAULT_MAX_LISTENERS,
+        max_listeners_per_ip: int = DEFAULT_MAX_LISTENERS_PER_IP,
     ) -> None:
         self._http = http
         self._name = name
@@ -133,6 +147,10 @@ class SendspinOutput:
         self._log = logger or logging.getLogger("encore.sendspin")
         self.buffer_ahead = buffer_ahead
         self.on_listeners_changed: Callable[[int], None] | None = None
+        # admission control for /sendspin websockets (open connections, not just players)
+        self._conns = ConnectionCounter(
+            per_key=min(max_listeners_per_ip, max_listeners), total=max_listeners
+        )
 
         self._server: SendspinServer | None = None
         self._anchor: SendspinClient | None = None
@@ -396,16 +414,28 @@ class SendspinOutput:
 
     # ------------------------------------------------------------------ websocket
 
-    async def ws_proxy(self, request: web.Request) -> web.WebSocketResponse:
+    async def ws_proxy(
+        self, request: web.Request, client_ip: str | None = None
+    ) -> web.WebSocketResponse:
         """Handle ``GET /sendspin`` on the main app.
 
         The websocket is terminated right here and handed to the in-process Sendspin
         server, which is equivalent to (and cheaper than) proxying frames to its own
         listener: browsers see a single origin, ws:// or wss:// as the page.
+
+        Connections are capped per client IP and in total (``on_client_connect``
+        runs for the whole lifetime of the connection).
         """
         if self._server is None:
             raise web.HTTPServiceUnavailable(text="Sendspin output not running")
-        resp = await self._server.on_client_connect(request)
+        key = client_ip or request.remote or "unknown"
+        if not self._conns.acquire(key):
+            self._log.warning("Refusing Sendspin connection from %s: listener limit reached", key)
+            raise web.HTTPServiceUnavailable(text="Too many listeners connected")
+        try:
+            resp = await self._server.on_client_connect(request)
+        finally:
+            self._conns.release(key)
         assert isinstance(resp, web.WebSocketResponse)
         return resp
 

@@ -83,6 +83,7 @@ class TrackPreparer:
         self.want_analysis = want_analysis
         self._items: dict[str, PreparedTrack] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._dropping: set[asyncio.Task] = set()  # cancelled, files removed when done
         self._decode_lock = asyncio.Lock()  # one Apple stream at a time
         self._analysis_lock = asyncio.Lock()
 
@@ -107,20 +108,33 @@ class TrackPreparer:
         return item.ok
 
     def retain_only(self, keep_ids: set[str]) -> None:
-        """Drop cached tracks not in keep_ids."""
+        """Drop cached tracks not in keep_ids.
+
+        A still-running preparation is cancelled first (which kills its ffmpeg) and
+        its files are removed once it has actually finished.
+        """
         for tid in list(self._items):
             if tid in keep_ids:
                 continue
             item = self._items.pop(tid)
-            if task := self._tasks.pop(tid, None):
-                if not task.done():
-                    task.cancel()
-            item.pcm_path.unlink(missing_ok=True)
-            item.pcm_path.with_suffix(".f32.part").unlink(missing_ok=True)
+            task = self._tasks.pop(tid, None)
+            if task is not None and not task.done():
+                task.cancel()
+                self._dropping.add(task)
+                task.add_done_callback(lambda t, item=item: self._dropped(t, item))
+            else:
+                _remove_files(item)
+
+    def _dropped(self, task: asyncio.Task, item: PreparedTrack) -> None:
+        self._dropping.discard(task)
+        if item.track.id not in self._items:  # not re-requested meanwhile (same paths)
+            _remove_files(item)
 
     async def close(self) -> None:
-        for task in self._tasks.values():
+        tasks = [*self._tasks.values(), *self._dropping]
+        for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self.retain_only(set())
 
     # ------------------------------------------------------------------------
@@ -235,6 +249,11 @@ def _gain_from_ebur128(stderr: str) -> tuple[float | None, float]:
         peak = float(m_p.group(1))
         gain_db = min(gain_db, TRUE_PEAK_CEILING_DB - peak)
     return integrated, 10 ** (gain_db / 20)
+
+
+def _remove_files(item: PreparedTrack) -> None:
+    item.pcm_path.unlink(missing_ok=True)
+    item.pcm_path.with_suffix(".f32.part").unlink(missing_ok=True)
 
 
 def _safe(track_id: str) -> str:

@@ -1,3 +1,10 @@
+# Encore
+
+Encore (party jukebox). This file lists third-party code, models and notable
+dependencies that Encore includes or ships in its container image. The full text of the
+Apache License 2.0, under which the Music Assistant code below is used, is in
+[LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
+
 ## Apple Music provider (backend/encore/providers/apple_music/)
 
 Portions of this module are adapted from Music Assistant
@@ -13,6 +20,32 @@ Modifications: all Music Assistant internals (models, cache, webserver, setup fl
 config) were removed and replaced by plain aiohttp/asyncio code returning Encore's own
 types; see the header comment of each file for specifics. musickit_wrapper.css is a new
 stylesheet (MA's copy of Apple's stylesheet was not vendored).
+
+helpers/throttle_retry.py embeds asyncio-throttle (https://github.com/hallazzang/asyncio-throttle):
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2017-2019 Hanjun Kim
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Smart fades (backend/encore/smartfades/)
 
@@ -107,3 +140,13 @@ Copyright 2026 Xiaohongshu. (Authors: Kaituo Xu, Wenpeng Li, Kai Huang, Kun Liu)
 The FireRed AED architecture, fixed CMVN statistics, and model weights are
 adapted and redistributed under the Apache License, Version 2.0
 (https://www.apache.org/licenses/LICENSE-2.0).
+
+## pywidevine (GPL-3.0)
+
+The container image bundles pywidevine 1.9.0 (https://github.com/devine-dl/pywidevine),
+installed unmodified from PyPI as a dependency of the Apple Music provider. pywidevine is
+licensed under the GNU General Public License v3.0; its license text ships in the image at
+`/opt/venv/lib/python3.14/site-packages/pywidevine-1.9.0.dist-info/LICENSE`, and its
+source is available from the project URL above and from PyPI. Distributing the image
+(which combines pywidevine with Encore) is subject to the GPL-3.0 terms; the project
+owner should take this into account when choosing Encore's own license.

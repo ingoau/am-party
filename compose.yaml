@@ -1,11 +1,16 @@
 services:
   encore:
-    build: .
+    build:
+      context: .
+      target: app
     image: encore:local
     container_name: encore
     restart: unless-stopped
+    init: true
     ports:
       - "${ENCORE_HOST_PORT:-8930}:8930"
+      # Native Sendspin LAN listener (only if ENCORE_SENDSPIN_PORT is set):
+      # - "8927:8927"
     env_file:
       - path: .env
         required: false
@@ -13,9 +18,19 @@ services:
       ENCORE_DATA_DIR: /data
       ENCORE_SECRETS_DIR: /run/secrets
     volumes:
+      # Create it first (mkdir -p data secrets) so it is owned by you; a root-owned
+      # ./data is handed to uid 1000 by the entrypoint.
       - ./data:/data
       # Optional: drop credential files here instead of using the UI
       # (apple_music_developer_token, apple_music_user_token, client_id.bin, private_key.pem)
       - ./secrets:/run/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Optional resource caps (smart-fades analysis can use several cores briefly):
+    # mem_limit: 3g
+    # cpus: 2
     labels:
       owner: encore

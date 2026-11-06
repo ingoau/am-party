@@ -16,6 +16,9 @@ pillow==13.0.0
 
 # smart fades (numpy pinned < 2.4 like Music Assistant, for older CPUs)
 numpy==2.3.5
+# torchaudio has no 2.12+/2.13 release (it is in maintenance mode; latest is 2.11.x, which
+# declares torch>=2.11). Only its pure-Python transforms (MelSpectrogram, AmplitudeToDB,
+# SpectralCentroid) are used, none of its compiled ops, so 2.11 runs fine on torch 2.13.
 torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'

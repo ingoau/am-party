@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +102,11 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.conn: aiosqlite.Connection | None = None
+        # One connection is shared by every coroutine, so a commit from one would also
+        # commit another's half-done multi-statement write. Writes take this lock;
+        # transaction() holds it for the whole block.
+        self._write_lock = asyncio.Lock()
+        self._tx_owner: asyncio.Task | None = None
 
     async def open(self) -> None:
         self.conn = await aiosqlite.connect(self.path)
@@ -143,11 +151,54 @@ class Database:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    def _in_transaction(self) -> bool:
+        return self._tx_owner is not None and self._tx_owner is asyncio.current_task()
+
     async def execute(self, sql: str, *args: Any) -> int:
-        async with self.c.execute(sql, args) as cur:
-            last = cur.lastrowid
-        await self.c.commit()
+        """Run one write statement (committed, unless inside transaction())."""
+        if self._in_transaction():
+            async with self.c.execute(sql, args) as cur:
+                return cur.lastrowid or 0
+        async with self._write_lock:
+            async with self.c.execute(sql, args) as cur:
+                last = cur.lastrowid
+            await self.c.commit()
         return last or 0
+
+    async def execute_rowcount(self, sql: str, *args: Any) -> int:
+        """Like execute() but returns the number of rows changed."""
+        if self._in_transaction():
+            async with self.c.execute(sql, args) as cur:
+                return cur.rowcount
+        async with self._write_lock:
+            async with self.c.execute(sql, args) as cur:
+                n = cur.rowcount
+            await self.c.commit()
+        return n
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Database]:
+        """Atomic multi-statement write: BEGIN ... COMMIT, ROLLBACK on error.
+
+        Use execute() (or self.c.execute) inside the block; other coroutines' writes
+        wait until it ends. Not re-entrant across tasks; nested use in the same task
+        joins the outer transaction.
+        """
+        if self._in_transaction():
+            yield self
+            return
+        async with self._write_lock:
+            self._tx_owner = asyncio.current_task()
+            try:
+                await self.c.execute("BEGIN IMMEDIATE")
+                try:
+                    yield self
+                except BaseException:
+                    await self.c.rollback()
+                    raise
+                await self.c.commit()
+            finally:
+                self._tx_owner = None
 
     # settings -----------------------------------------------------------
     async def get_settings(self) -> dict[str, Any]:
@@ -161,17 +212,17 @@ class Database:
         return out
 
     async def set_settings(self, values: dict[str, Any]) -> dict[str, Any]:
-        for key, value in values.items():
-            if key not in DEFAULT_SETTINGS:
-                continue
-            await self.c.execute(
-                "INSERT INTO settings(key, value) VALUES(?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, json.dumps(value)),
-            )
-        await self.c.commit()
+        async with self.transaction():
+            for key, value in values.items():
+                if key not in DEFAULT_SETTINGS:
+                    continue
+                await self.execute(
+                    "INSERT INTO settings(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    key,
+                    json.dumps(value),
+                )
         return await self.get_settings()
-
 
     # credentials ------------------------------------------------------------
     async def get_credential(self, key: str) -> tuple[str, float] | None:

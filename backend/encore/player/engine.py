@@ -12,6 +12,7 @@ Flow per track:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,13 @@ CHUNK_SECONDS = 0.5
 LOCK_AHEAD = 25.0  # seconds before the tail starts that we choose next + render
 MIN_TRANSITION = 3.0
 SKIP_WAIT_DECODE = 60.0
+# The transition must be rendered before the writer reaches the tail. RENDER_BUDGET is
+# reserved for the render itself (decode/analysis waits end that much earlier) and
+# BUILD_GRACE is how long the writer may eat into the output buffer (~3s) waiting for
+# it before giving up and playing through gaplessly instead of underrunning.
+RENDER_BUDGET = {"smart": 5.0, "standard": 2.0}
+BUILD_GRACE = 1.5
+POLL = 0.1
 
 
 def _soft_limit(pcm: bytes, knee: float = 0.9) -> bytes:
@@ -91,6 +99,18 @@ class PartyHooks(Protocol):
 BuildTransition = Callable[..., Awaitable[Any]]
 
 
+@dataclass
+class _Resume:
+    """Where the main loop continues after a pause or an interrupted transition."""
+
+    cand: Candidate
+    item: PreparedTrack
+    pos: int  # byte offset to continue from
+
+
+_INTERRUPTED = object()
+
+
 class Engine:
     def __init__(
         self,
@@ -117,6 +137,10 @@ class Engine:
         self._task: asyncio.Task | None = None
         self._prefetch_task: asyncio.Task | None = None
         self._handover_handles: list[asyncio.TimerHandle] = []
+        self._bg: set[asyncio.Task] = set()  # handovers, transition renders
+        # frozen position of `now` while paused (cleared when playback resumes)
+        self._paused_pos: float | None = None
+        self._stream_active = False
         # candidates already written to the output whose handover hasn't fired yet;
         # the party must not offer these again
         self.inflight: list[Candidate] = []
@@ -126,10 +150,12 @@ class Engine:
         self._task = asyncio.create_task(self._run(), name="engine")
 
     async def stop(self) -> None:
-        for t in (self._task, self._prefetch_task):
-            if t:
-                t.cancel()
         self._cancel_handovers()
+        tasks = [t for t in (self._task, self._prefetch_task, *self._bg) if t and not t.done()]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._task = self._prefetch_task = None
 
     def poke(self) -> None:
         """Queue/settings changed: wake the engine and refresh prefetching."""
@@ -142,6 +168,7 @@ class Engine:
 
     async def pause(self) -> None:
         if not self.paused:
+            self._paused_pos = self.position()
             self.paused = True
             self._wake.set()
 
@@ -153,7 +180,20 @@ class Engine:
     def position(self) -> float:
         if not self.now:
             return 0.0
+        if self._paused_pos is not None:
+            return max(0.0, min(self._paused_pos, self.now.prepared.duration))
         return max(0.0, min(time.time() - self.now.started_at, self.now.prepared.duration))
+
+    def _spawn(self, coro: Any, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._bg.add(task)
+        task.add_done_callback(self._bg_done)
+        return task
+
+    def _bg_done(self, task: asyncio.Task) -> None:
+        self._bg.discard(task)
+        if not task.cancelled() and (err := task.exception()) is not None:
+            LOGGER.error("Engine task %s failed", task.get_name(), exc_info=err)
 
     # -- prefetch ------------------------------------------------------------
     def schedule_prefetch(self) -> None:
@@ -190,6 +230,8 @@ class Engine:
             except Exception as err:  # noqa: BLE001
                 LOGGER.exception("Engine error")
                 self.last_error = str(err)
+                with contextlib.suppress(Exception):
+                    await self._end(drain=False)
                 await asyncio.sleep(2)
 
     async def _wait_wake(self, timeout: float | None = None) -> None:
@@ -211,19 +253,31 @@ class Engine:
         item = await self._ensure_decoded(cand)
         if item is None:
             return
+        # pause/resume and interrupted transitions come back here instead of recursing
+        resume: _Resume | None = _Resume(cand, item, 0)
+        while resume is not None:
+            resume = await self._play_from(resume.cand, resume.item, resume.pos)
+
+    async def _begin(self) -> None:
+        self._stream_active = True
         await self.output.begin_stream()
-        await self._play_from(cand, item, pos=0, started_at=None)
+
+    async def _end(self, drain: bool) -> None:
+        self._stream_active = False
+        await self.output.end_stream(drain=drain)
 
     async def _set_idle(self) -> None:
         if self.now is not None:
             self.now = None
+            self._paused_pos = None
             await self.hooks.on_engine_state()
 
     async def _drain_and_idle(self, started_at: float | None, item: PreparedTrack) -> None:
         """Stream ran out of tracks: let the last one finish audibly, then go idle."""
-        await self.output.end_stream(drain=True)
+        was_active = self._stream_active
+        await self._end(drain=True)
         self.locked = None
-        if started_at is not None:
+        if was_active and started_at is not None:
             remaining = started_at + item.duration - time.time()
             if remaining > 0:
                 await self._wait_wake(min(remaining, 15))
@@ -232,7 +286,14 @@ class Engine:
 
     async def _ensure_decoded(self, cand: Candidate, timeout: float = SKIP_WAIT_DECODE) -> PreparedTrack | None:
         item = self.preparer.prepare(cand.track)
-        ok = await self.preparer.wait_decoded(item, timeout)
+        end = time.monotonic() + timeout
+        while not item.decoded.is_set() and (left := end - time.monotonic()) > 0:
+            await self.preparer.wait_decoded(item, min(left, 0.25))
+            if self._stream_active and self._interrupted():
+                # pause/skip pressed while the previous track's last buffered audio
+                # plays and we wait for this one: stop that audio now
+                await self._stop_audible()
+        ok = item.ok
         if not ok:
             err = item.error or "timed out preparing track"
             LOGGER.warning("Skipping %s: %s", cand.track.title, err)
@@ -242,6 +303,19 @@ class Engine:
             await self.hooks.on_track_failed(cand, err)
             return None
         return item
+
+    async def _stop_audible(self) -> None:
+        """Cut the audible track (stream finished writing) for a pause or skip."""
+        await self._end(drain=False)
+        self._cancel_handovers()
+        if self._skip.is_set():
+            self._skip.clear()
+            if self.now:
+                LOGGER.info("Skipping %s", self.now.candidate.track.title)
+            await self._finish_current()
+        elif self.now:
+            self._freeze(self.now.candidate, self.now.prepared, self.position())
+            await self.hooks.on_engine_state()
 
     def _read(self, item: PreparedTrack, start: int, length: int) -> bytes:
         length = max(0, min(length, item.size - start))
@@ -265,101 +339,116 @@ class Engine:
         return mode, float(s.get("crossfade_duration", 8))
 
     async def _write_chunks(
-        self, pcm: bytes, on_first: Callable[[float], None] | None = None
-    ) -> tuple[float | None, bool]:
-        """Write pcm in chunks. Returns (time first sample is heard, interrupted)."""
+        self, pcm: bytes, on_first: Callable[[float], Awaitable[None]] | None = None
+    ) -> tuple[float | None, int, bool]:
+        """Write pcm in chunks. Returns (time first sample is heard, bytes written, interrupted)."""
         first: float | None = None
         step = seconds_to_bytes(CHUNK_SECONDS)
+        written = 0
         for off in range(0, len(pcm), step):
             if self._interrupted():
-                return first, True
-            t = await self.output.write(pcm[off : off + step])
+                return first, written, True
+            chunk = pcm[off : off + step]
+            t = await self.output.write(chunk)
+            written += len(chunk)
             if first is None:
                 first = t
                 if on_first:
-                    on_first(t)
-        return first, False
+                    await on_first(t)
+        return first, written, False
 
     def _interrupted(self) -> bool:
         return self.paused or self._skip.is_set()
 
-    async def _play_from(
-        self, cand: Candidate, item: PreparedTrack, pos: int, started_at: float | None
-    ) -> None:
-        """Play `item` from byte `pos`, chaining into following tracks until idle."""
-        if started_at is not None:
-            await self._handover(cand, item, started_at)
+    def _is_current(self, cand: Candidate, started_at: float | None) -> bool:
+        return started_at is not None or bool(self.now and self.now.candidate is cand)
+
+    async def _play_from(self, cand: Candidate, item: PreparedTrack, pos: int) -> _Resume | None:
+        """Play `item` from byte `pos`, chaining into following tracks.
+
+        Returns where to continue after a pause / interrupted transition, or None when
+        the stream went idle or the current track was skipped (the main loop then
+        picks the next track).
+        """
+        started_at: float | None = None  # wall clock when `cand` position 0 is/was audible
+
+        async def mark_started(t: float, at: int) -> None:
+            nonlocal started_at
+            if started_at is None:
+                started_at = t - at / BYTES_PER_SECOND
+                await self._handover(cand, item, started_at)
+
         while True:
+            if not self._stream_active and not self._interrupted():
+                await self._begin()
             mode, std_dur = self._mode()
             tail_len = 0
             if mode != "off" and self.build_transition is not None:
                 tail_len = seconds_to_bytes(
                     min(self.tail_seconds(mode, std_dur), item.duration / 2)
                 )
-                if tail_len < seconds_to_bytes(MIN_TRANSITION):
-                    tail_len = 0
-            tail_start = max(pos, item.size - tail_len)
+            # resuming inside the tail (e.g. paused mid-transition): play a little of
+            # the outgoing track first so the transition can be re-rendered in time
+            lead = seconds_to_bytes(RENDER_BUDGET.get(mode, 2.0)) if pos else 0
+            tail_start = max(pos + lead, item.size - tail_len)
+            if item.size - tail_start < seconds_to_bytes(MIN_TRANSITION):
+                tail_start = item.size  # no (room for a) transition: play through
             lock_at = max(pos, tail_start - seconds_to_bytes(LOCK_AHEAD))
             build: asyncio.Task | None = None
             nxt: Candidate | None = None
             step = seconds_to_bytes(CHUNK_SECONDS)
 
             # body of the track
-            while pos < tail_start:
+            while True:
                 if self._interrupted():
                     if build:
                         build.cancel()
-                    await self._interrupt(cand, item)
-                    return
-                if build is None and nxt is None and started_at is not None and pos >= lock_at:
+                    return await self._interrupt(cand, item, started_at, pos)
+                if build is None and nxt is None and pos >= lock_at and self._is_current(cand, started_at):
                     nxt = self._lock_next()
-                    if nxt and tail_len:
-                        build = asyncio.create_task(
-                            self._build(item, tail_start, nxt, mode, std_dur), name="transition"
+                    if nxt and tail_start < item.size:
+                        deadline = time.time() + (tail_start - pos) / BYTES_PER_SECOND
+                        build = self._spawn(
+                            self._build(item, tail_start, nxt, mode, std_dur, deadline), "transition"
                         )
+                if pos >= tail_start:
+                    break
                 chunk = self._read(item, pos, min(step, tail_start - pos))
                 if not chunk:
                     break
                 t = await self.output.write(chunk)
-                if started_at is None:
-                    started_at = t - pos / BYTES_PER_SECOND
-                    await self._handover(cand, item, started_at)
+                await mark_started(t, pos)
                 pos += len(chunk)
 
-            result = None
+            result: Any = None
             if build is not None:
-                try:
-                    result = await build
-                except asyncio.CancelledError:
-                    raise
-                except Exception as err:  # noqa: BLE001
-                    LOGGER.warning("Transition failed, playing through: %s", err)
-                    result = None
+                result = await self._await_build(build)
+                if result is _INTERRUPTED:
+                    return await self._interrupt(cand, item, started_at, pos)
 
             if result is None:
                 # no transition: play the rest of this track, then the next from 0
                 rest = self._read(item, pos, item.size - pos)
                 if rest:
-                    t, interrupted = await self._write_chunks(rest)
-                    if started_at is None and t is not None:
-                        started_at = t - pos / BYTES_PER_SECOND
-                        await self._handover(cand, item, started_at)
+                    at = pos
+                    _, written, interrupted = await self._write_chunks(
+                        rest, lambda t: mark_started(t, at)
+                    )
+                    pos += written
                     if interrupted:
-                        await self._interrupt(cand, item)
-                        return
+                        return await self._interrupt(cand, item, started_at, pos)
                 if nxt is None:
                     nxt = self._lock_next()
                 if nxt is None:
                     await self._drain_and_idle(started_at, item)
-                    return
+                    return None
                 nitem = await self._ensure_decoded(nxt)
                 if nitem is None:
-                    nxt = None
                     # try whatever is next now
                     nxt = self._lock_next()
                     if nxt is None or (nitem := await self._ensure_decoded(nxt)) is None:
                         await self._drain_and_idle(started_at, item)
-                        return
+                        return None
                 self.last_transition = "gapless"
                 cand, item, pos, started_at = nxt, nitem, 0, None
                 continue
@@ -376,36 +465,63 @@ class Engine:
                 len(res.pcm) / BYTES_PER_SECOND,
             )
             scheduled: list[float] = []
+            at = tail_start
 
-            def _on_first(t0: float, nxt=nxt, nitem=nitem, res=res) -> None:  # noqa: ANN001
+            async def _on_first(t0: float, nxt=nxt, nitem=nitem, res=res, at=at) -> None:  # noqa: ANN001
+                await mark_started(t0, at)
                 scheduled.append(t0 + res.in_start_offset)
                 self._schedule_handover(nxt, nitem, scheduled[0], t0 + res.handover_offset)
 
-            t0, interrupted = await self._write_chunks(res.pcm, _on_first)
+            t0, _, interrupted = await self._write_chunks(res.pcm, _on_first)
             if not scheduled:
-                _on_first(t0 if t0 is not None else time.time())
+                await _on_first(t0 if t0 is not None else time.time())
             next_started = scheduled[0]
             if interrupted:
-                # interrupted mid-transition
-                already_switched = bool(self.now and self.now.candidate is nxt)
+                switched = bool(self.now and self.now.candidate is nxt)
                 self._cancel_handovers()
-                if self._skip.is_set() and not self.paused and not already_switched:
+                if switched:
+                    # the incoming track is already "now playing": pause/skip it
+                    return await self._interrupt(
+                        nxt, nitem, next_started, seconds_to_bytes(res.in_position_at_end)
+                    )
+                if self._skip.is_set() and not self.paused:
                     # skip pressed while the outgoing song was still "now playing":
                     # jump straight into the incoming song where it is right now
                     self._skip.clear()
-                    await self.output.end_stream(drain=False)
+                    await self._end(drain=False)
                     await self._handover(nxt, nitem, next_started)
-                    pos = seconds_to_bytes(max(0.0, time.time() - next_started))
-                    await self.output.begin_stream()
-                    await self._play_from(nxt, nitem, min(pos, nitem.size), started_at=None)
-                    return
-                await self._handover(nxt, nitem, next_started)
-                await self._interrupt(nxt, nitem)
-                return
+                    npos = seconds_to_bytes(max(0.0, time.time() - next_started))
+                    return _Resume(nxt, nitem, min(npos, nitem.size))
+                # pause before the switch: the outgoing track stays current and resumes
+                # from where it was heard; its transition is re-rendered on resume
+                return await self._interrupt(cand, item, started_at, item.size)
             cand, item = nxt, nitem  # type: ignore[assignment]
             pos = seconds_to_bytes(res.in_position_at_end)
             started_at = next_started
             # handover callback (scheduled) updates now playing at the right moment
+
+    async def _await_build(self, build: asyncio.Task) -> Any:
+        """Wait for the transition render without blocking pause/skip or underrunning."""
+        grace_end = time.monotonic() + BUILD_GRACE
+        try:
+            while not build.done():
+                if self._interrupted():
+                    build.cancel()
+                    return _INTERRUPTED
+                if time.monotonic() > grace_end:
+                    LOGGER.warning("Transition not rendered in time, playing through")
+                    build.cancel()
+                    return None
+                await asyncio.wait({build}, timeout=POLL)
+        except asyncio.CancelledError:
+            build.cancel()
+            raise
+        if build.cancelled():
+            return None
+        if (err := build.exception()) is not None:
+            LOGGER.warning("Transition failed, playing through: %s", err)
+            return None
+        return build.result()
 
     def _lock_next(self) -> Candidate | None:
         cand = self.hooks.peek_next()
@@ -416,15 +532,22 @@ class Engine:
         return cand
 
     async def _build(
-        self, out_item: PreparedTrack, tail_start: int, nxt: Candidate, mode: str, std_dur: float
+        self,
+        out_item: PreparedTrack,
+        tail_start: int,
+        nxt: Candidate,
+        mode: str,
+        std_dur: float,
+        deadline: float,
     ) -> tuple[PreparedTrack, Any] | None:
+        """Render the transition; `deadline` is when the writer reaches the tail."""
+        budget = RENDER_BUDGET.get(mode, 2.0)
         nitem = self.preparer.prepare(nxt.track)
-        remaining = max(1.0, (tail_start / BYTES_PER_SECOND) - self.position() - 3)
-        if not await self.preparer.wait_decoded(nitem, remaining):
+        if not await self.preparer.wait_decoded(nitem, max(0.5, deadline - budget - time.time())):
             LOGGER.warning("Next track not ready in time for a crossfade")
             return None
         if mode == "smart" and not nitem.analysed.is_set():
-            remaining = max(0.0, (tail_start / BYTES_PER_SECOND) - self.position() - 8)
+            remaining = max(0.0, deadline - budget - time.time())
             try:
                 await asyncio.wait_for(nitem.analysed.wait(), remaining)
             except TimeoutError:
@@ -452,7 +575,7 @@ class Engine:
         delay = max(0.0, at - time.time())
         self.inflight.append(cand)
         handle = loop.call_later(
-            delay, lambda: asyncio.create_task(self._handover(cand, item, started_at))
+            delay, lambda: self._spawn(self._handover(cand, item, started_at), "handover")
         )
         self._handover_handles.append(handle)
 
@@ -467,6 +590,7 @@ class Engine:
         self.inflight = [c for c in self.inflight if c is not cand]
         if self.locked is cand:
             self.locked = None
+        self._paused_pos = None
         if is_new:
             self.now = NowPlaying(candidate=cand, prepared=item, started_at=started_at)
         else:
@@ -488,37 +612,66 @@ class Engine:
         else:
             await self.hooks.on_engine_state()
 
-    async def _interrupt(self, cand: Candidate, item: PreparedTrack) -> None:
-        """Handle pause or skip while `cand` is the audible track."""
-        await self.output.end_stream(drain=False)
-        self._cancel_handovers()
-        if self._skip.is_set():
-            self._skip.clear()
-            self.locked = None
-            LOGGER.info("Skipping %s", cand.track.title)
-            await self._finish_current(skipped=True)
-            return  # main loop picks up the next track
-        # pause: remember audible position and wait
-        started = self.now.started_at if self.now else time.time()
-        pos = seconds_to_bytes(max(0.0, time.time() - started))
-        pos = min(pos, item.size)
-        self.locked = None
+    def _freeze(self, cand: Candidate, item: PreparedTrack, pos_s: float) -> None:
+        """Paused at `pos_s` of the current track: freeze position and metadata."""
+        self._paused_pos = pos_s
+        if self.now:
+            # keep started_at consistent with the frozen position for clients
+            self.now.started_at = time.time() - pos_s
         t = cand.track
         self.output.set_metadata(
-            t.title, t.artist, t.album, t.artwork_url, item.duration, pos / BYTES_PER_SECOND, False
+            t.title, t.artist, t.album, t.artwork_url, item.duration, pos_s, False
         )
+
+    async def _interrupt(
+        self, cand: Candidate, item: PreparedTrack, started_at: float | None, pos: int
+    ) -> _Resume | None:
+        """Handle pause or skip while `cand` is being played.
+
+        `started_at` is `cand`'s local clock (None if none of it has been heard since
+        this play started) and `pos` the byte offset written so far (an upper bound
+        for what was heard). Returns where to resume, or None after a skip.
+        """
+        current = bool(self.now and self.now.candidate is cand)
+        if current and self.paused and self._paused_pos is not None:
+            # pause() snapshotted what was heard at the moment it was pressed
+            pos = min(pos, seconds_to_bytes(self._paused_pos))
+        elif started_at is not None:
+            heard = seconds_to_bytes(max(0.0, time.time() - started_at))
+            pos = min(pos, heard)
+        pos = max(0, min(pos, item.size))
+        await self._end(drain=False)
+        self._cancel_handovers()
+        self.locked = None
+        if self._skip.is_set():
+            self._skip.clear()
+            if current:
+                LOGGER.info("Skipping %s", cand.track.title)
+                await self._finish_current()
+                return None  # main loop picks up the next track
+            # `cand` wasn't heard yet: the skip was meant for the audible track
+            if self.now:
+                LOGGER.info("Skipping %s", self.now.candidate.track.title)
+            await self._finish_current()
+            return _Resume(cand, item, pos)
+        # pause: remember the audible position and wait
+        if not current:
+            # paused at a track boundary before `cand` was heard: it becomes current
+            await self._handover(cand, item, time.time() - pos / BYTES_PER_SECOND)
+        self._freeze(cand, item, pos / BYTES_PER_SECOND)
         await self.hooks.on_engine_state()
         while self.paused:
             await self._wait_wake()
             if self._skip.is_set():
                 self._skip.clear()
-                await self._finish_current(skipped=True)
-                return
-        await self.output.begin_stream()
-        await self._play_from(cand, item, pos, started_at=None)
+                LOGGER.info("Skipping %s", cand.track.title)
+                await self._finish_current()
+                return None
+        return _Resume(cand, item, pos)
 
-    async def _finish_current(self, skipped: bool) -> None:
+    async def _finish_current(self) -> None:
         self.now = None
+        self._paused_pos = None
         await self.hooks.on_engine_state()
 
     def status(self) -> dict[str, Any]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +17,17 @@ from .auth import AuthManager
 from .config import Config
 from .db import Database, now
 from .party import Hub, Party
+from .security import ConnectionCounter
 from .player.engine import Engine
 from .player.prepare import TrackPreparer, dumps_analysis
 
 LOGGER = logging.getLogger("encore")
 
 ANALYSIS_VERSION = 1
+# Live-update sockets. Every guest phone holds one and a whole party on one wifi
+# usually shares a public IP, so the per-IP cap is generous.
+WS_MAX_PER_IP = 100
+WS_MAX_TOTAL = 500
 
 
 class Encore:
@@ -38,12 +44,16 @@ class Encore:
         self.analysis_worker: Any = None
         self.smartfades_error: str | None = None
         self._tasks: list[asyncio.Task] = []
+        # /api/ws admission (per client IP, total) and which session each socket uses
+        self.ws_conns = ConnectionCounter(per_key=WS_MAX_PER_IP, total=WS_MAX_TOTAL)
+        self.ws_sessions: dict[web.WebSocketResponse, str] = {}
 
     # -- lifecycle ---------------------------------------------------------------
     async def start(self) -> None:
         await self.db.open()
         self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
         self.auth = AuthManager(self.config, self.db, self.http)
+        await self.auth.warn_if_unclaimed()
 
         from .providers.apple_music import AppleMusicClient
 
@@ -57,6 +67,7 @@ class Encore:
         )
         self.party = Party(self.db, self.apple, self.hub)
         self.party.public_url = self.config.public_url
+        self.party.set_rate_limits(self.config.ip_search_per_min, self.config.ip_max_pending)
         await self.party.load()
 
         build_transition = None
@@ -68,9 +79,8 @@ class Encore:
             tail_seconds = smartfades.tail_seconds
             head_seconds = smartfades.head_seconds
             self.analysis_worker = smartfades.AnalysisWorker(logger=logging.getLogger("encore.smartfades"))
-            await self.analysis_worker.start()
-            if not self.analysis_worker.available:
-                self.smartfades_error = self.analysis_worker.error
+            # loading torch + models takes a while: don't hold up readiness for it
+            self._spawn(self._start_analysis(), "analysis-start")
         except Exception as err:  # noqa: BLE001
             LOGGER.exception("Smart fades unavailable")
             self.smartfades_error = str(err)
@@ -78,7 +88,10 @@ class Encore:
         from .player.sendspin_out import SendspinOutput
 
         self.output = SendspinOutput(
-            self.http, name=self.party.settings().get("party_name") or "Encore",
+            self.http,
+            name=self.party.settings().get("party_name") or "Encore",
+            port=self.config.sendspin_port,  # native LAN listener only if configured
+            max_listeners=self.config.max_listeners,
         )
         self.output.on_listeners_changed = self.party.set_listeners
         await self.output.start()
@@ -101,17 +114,44 @@ class Encore:
         )
         self.party.engine = self.engine
         await self.engine.start()
-        self._tasks.append(asyncio.create_task(self.party.connect_apple()))
-        self._tasks.append(asyncio.create_task(self.party.fallback_refresher()))
-        self._tasks.append(asyncio.create_task(self._housekeeping()))
+        self._spawn(self.party.connect_apple(), "connect-apple")
+        self._spawn(self.party.fallback_refresher(), "fallback-refresher")
+        self._spawn(self._housekeeping(), "housekeeping")
+        if not self.config.oidc_enabled:
+            LOGGER.warning("OIDC is not configured (OIDC_ISSUER / OIDC_CLIENT_ID): nobody can sign in to the admin UI")
+        if not self.apple.configured:
+            LOGGER.warning("Apple Music is not configured: search and playback are unavailable until tokens are set")
         LOGGER.info("Encore running on %s", self.config.public_url)
 
+    def _spawn(self, coro: Any, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.append(task)
+        task.add_done_callback(self._task_done)
+        return task
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        if task in self._tasks:
+            self._tasks.remove(task)
+        if not task.cancelled() and (err := task.exception()) is not None:
+            LOGGER.error("Task %s failed", task.get_name(), exc_info=err)
+
+    async def _start_analysis(self) -> None:
+        worker = self.analysis_worker
+        await worker.start()
+        if not worker.available:
+            self.smartfades_error = worker.error
+
     async def stop(self) -> None:
-        for t in self._tasks:
+        # cancel and *await* background work before tearing down what it uses
+        tasks = list(self._tasks)
+        for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if getattr(self, "party", None):
+            await self.party.close()
         if getattr(self, "engine", None):
             await self.engine.stop()
-            await self.engine.preparer.close()
+            await self.engine.preparer.close()  # kills ffmpeg, then deletes cache files
         if getattr(self, "output", None):
             await self.output.stop()
         if self.analysis_worker:
@@ -123,11 +163,14 @@ class Encore:
 
     async def _housekeeping(self) -> None:
         while True:
-            await self.db.execute("DELETE FROM sessions WHERE expires_at < ?", now())
-            await self.db.execute(
-                "DELETE FROM requests WHERE status != 'pending' AND created_at < ?",
-                now() - 30 * 86400,
-            )
+            try:
+                await self.db.execute("DELETE FROM sessions WHERE expires_at < ?", now())
+                await self.db.execute(
+                    "DELETE FROM requests WHERE status != 'pending' AND created_at < ?",
+                    now() - 30 * 86400,
+                )
+            except Exception:  # noqa: BLE001 - keep the loop alive
+                LOGGER.exception("Housekeeping failed")
             await asyncio.sleep(3600)
 
     # -- analysis cache ------------------------------------------------------------
@@ -162,6 +205,9 @@ class Encore:
     async def update_apple_credentials(
         self, developer_token: str | None = None, user_token: str | None = None
     ) -> None:
+        for value in (developer_token, user_token):
+            if value is not None and not isinstance(value, str):
+                raise TypeError("Apple Music tokens must be strings")
         if developer_token is not None:
             await self.db.set_credential("apple_developer_token", developer_token.strip() or None)
         if user_token is not None:
@@ -214,6 +260,14 @@ class Encore:
             "listeners": self.party.listeners,
             "engine": self.engine.status(),
         }
+
+    async def close_session_sockets(self, session_id: str) -> None:
+        """Close live-update sockets opened with a session that just ended (logout)."""
+        for ws, sid in list(self.ws_sessions.items()):
+            if sid and secrets.compare_digest(sid, session_id):
+                self.hub.clients.pop(ws, None)
+                self.ws_sessions.pop(ws, None)
+                await ws.close(code=4001, message=b"signed out")
 
     async def refresh_ws_users(self) -> None:
         """Re-resolve permissions of connected websocket users after a grant change."""

@@ -41,6 +41,15 @@ class Config:
     apple_music_developer_token: str | None
     widevine_private_key_path: Path | None
     widevine_client_id_path: Path | None
+    # security / access control
+    admin_emails: frozenset[str] = frozenset()
+    allowed_emails: frozenset[str] = frozenset()
+    allowed_domains: frozenset[str] = frozenset()
+    trusted_proxy: str | None = None  # None | "cloudflare" | "x-forwarded-for"
+    max_listeners: int = 100
+    ip_search_per_min: int = 120
+    ip_max_pending: int = 20
+    sendspin_port: int = 0  # native LAN listener; 0 = disabled
     # misc
     dev_mode: bool = False
     static_dir: Path = field(default_factory=lambda: Path(__file__).parent / "static")
@@ -48,6 +57,10 @@ class Config:
     @property
     def oidc_enabled(self) -> bool:
         return bool(self.oidc_issuer and self.oidc_client_id)
+
+    @property
+    def sign_in_restricted(self) -> bool:
+        return bool(self.allowed_emails or self.allowed_domains)
 
     @property
     def cookie_secure(self) -> bool:
@@ -96,6 +109,16 @@ def load_config() -> Config:
         or _file_if_exists(secrets_dir / "apple_music_developer_token"),
         widevine_private_key_path=_secret_path("WIDEVINE_PRIVATE_KEY", "private_key.pem"),
         widevine_client_id_path=_secret_path("WIDEVINE_CLIENT_ID", "client_id.bin"),
+        admin_emails=_email_set(_env("ENCORE_ADMIN_EMAILS")),
+        allowed_emails=_email_set(_env("ENCORE_ALLOWED_EMAILS")),
+        allowed_domains=frozenset(
+            d.lstrip("@") for d in _email_set(_env("ENCORE_ALLOWED_DOMAINS")) if d.lstrip("@")
+        ),
+        trusted_proxy=_trusted_proxy(_env("ENCORE_TRUSTED_PROXY")),
+        max_listeners=max(1, int(_env("ENCORE_MAX_LISTENERS", "100"))),
+        ip_search_per_min=max(1, int(_env("ENCORE_IP_SEARCHES_PER_MINUTE", "120"))),
+        ip_max_pending=max(1, int(_env("ENCORE_IP_MAX_PENDING", "20"))),
+        sendspin_port=int(_env("ENCORE_SENDSPIN_PORT", "0")),
         dev_mode=_env("ENCORE_DEV", "0") == "1",
         static_dir=Path(_env("ENCORE_STATIC_DIR", str(Path(__file__).parent / "static"))),
     )
@@ -105,3 +128,24 @@ def _file_if_exists(path: Path) -> str | None:
     if path.is_file():
         return path.read_text().strip() or None
     return None
+
+
+def _email_set(value: str | None) -> frozenset[str]:
+    """Comma/whitespace separated list -> lower-cased set."""
+    if not value:
+        return frozenset()
+    return frozenset(p.strip().lower() for p in value.replace(";", ",").replace(" ", ",").split(",") if p.strip())
+
+
+TRUSTED_PROXIES = ("cloudflare", "x-forwarded-for")
+
+
+def _trusted_proxy(value: str | None) -> str | None:
+    if not value:
+        return None
+    v = value.strip().lower()
+    if v in ("none", "off", "0", "false"):
+        return None
+    if v not in TRUSTED_PROXIES:
+        raise ValueError(f"ENCORE_TRUSTED_PROXY must be one of {', '.join(TRUSTED_PROXIES)} (or unset)")
+    return v

@@ -115,6 +115,10 @@ class AnalysisWorker:
                     self._request({"id": req_id, "cmd": "analyze", "path": str(pcm_path)}),
                     timeout=self.analyze_timeout,
                 )
+            except asyncio.CancelledError:
+                # The child keeps working on this request; its reply is skipped by the
+                # next _request (ids only grow), so the warm models stay loaded.
+                raise
             except TimeoutError:
                 self.logger.warning("Smart fades analysis of %s timed out", pcm_path)
                 await self._kill_child()
@@ -196,7 +200,18 @@ class AnalysisWorker:
         assert proc is not None and proc.stdin is not None
         proc.stdin.write((json.dumps(payload) + "\n").encode())
         await proc.stdin.drain()
-        return await self._read_message()
+        while True:
+            reply = await self._read_message()
+            # A cancelled earlier request (e.g. the track left the queue) still gets
+            # answered by the child; drop those stale replies instead of returning one
+            # as ours. Replies arrive in request order, so anything older is stale.
+            if reply is not None and "id" not in reply and "ready" in reply:
+                continue  # hello of a child whose startup wait was cancelled
+            rid = reply.get("id") if reply is not None else None
+            if isinstance(rid, int) and rid < payload["id"]:
+                self.logger.debug("Dropping stale analysis reply %s", rid)
+                continue
+            return reply
 
     async def _read_message(self) -> dict[str, Any] | None:
         proc = self._proc
