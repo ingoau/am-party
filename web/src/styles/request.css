@@ -11,8 +11,7 @@
   height: 420px;
   z-index: -1;
   background:
-    radial-gradient(70% 100% at 20% 0%, rgba(var(--accent-rgb), 0.28), transparent 70%),
-    radial-gradient(60% 90% at 90% 0%, rgba(124, 92, 255, 0.22), transparent 70%);
+    radial-gradient(90% 100% at 30% 0%, rgba(var(--accent-rgb), 0.24), transparent 70%);
   pointer-events: none;
 }
 .req__header {
@@ -20,6 +19,7 @@
 }
 .req__party {
   display: block;
+  margin: 0;
   font-family: var(--font-display);
   font-weight: 850;
   font-size: clamp(1.6rem, 7vw, 2.2rem);
@@ -28,22 +28,13 @@
   text-decoration: none;
   overflow-wrap: anywhere;
 }
-.req__sub {
-  color: var(--muted);
-  font-weight: 600;
-}
 
 .req-np {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 12px;
-  border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--border);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  margin-bottom: 16px;
+  padding: 4px 4px 4px 0;
+  margin-bottom: 12px;
 }
 .req-np__art {
   width: 64px;
@@ -54,9 +45,6 @@
 .req-np__text {
   flex: 1;
   min-width: 0;
-}
-.req-np__text .eyebrow {
-  font-size: 0.68rem;
 }
 .req-np__title {
   font-weight: 700;
@@ -90,6 +78,7 @@
   font-weight: 700;
   font-size: 0.92rem;
   padding: 10px 8px;
+  min-height: 44px;
   border-radius: 999px;
   cursor: pointer;
   white-space: nowrap;
@@ -103,4 +92,40 @@
 }
 .req .track-row__actions .btn {
   min-width: 92px;
+}
+
+/* My requests: status line + "Yours" tag in Up next */
+.req-status {
+  font-weight: 600;
+  color: var(--muted);
+}
+.req-status--wait {
+  color: var(--warn);
+}
+.req-status--queued {
+  color: var(--text);
+}
+.req-status--live {
+  color: var(--accent);
+}
+.req .track-row__actions .btn--ghost {
+  min-width: 0;
+  padding: 0 10px;
+  border-color: transparent;
+  color: var(--muted);
+}
+.req .track-row__actions .btn--ghost:hover {
+  color: var(--text);
+}
+.req .track-row__actions .btn-group {
+  gap: 2px;
+}
+.req .track-row__actions .btn--danger-ghost {
+  min-width: 0;
+}
+.yours {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent);
+  padding: 0 6px;
 }

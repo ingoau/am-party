@@ -4,7 +4,7 @@ import type { SongRequest } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { TrackRow } from "../../components/TrackRow";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, CheckCheck, ChevronDown, Info, ListStart, X } from "lucide-react";
+import { Check, CheckCheck, ChevronDown, ListStart, X } from "lucide-react";
 import { StatusBadge } from "../../components/StatusBadge";
 import { cx, timeAgo } from "../../util";
 import { PageHeader, flash } from "./common";
@@ -105,16 +105,8 @@ export function RequestsTab() {
 
   return (
     <div className="page">
-      <PageHeader
-        title="Requests"
-        sub={
-          state && !state.requests_open
-            ? "Requests are closed — guests can't submit new ones."
-            : requireApproval
-              ? "Approve what fits the vibe."
-              : "Guest requests are added to the queue automatically."
-        }
-      >
+      <PageHeader title="Requests">
+        <RequireApprovalSwitch className="switch-row switch-row--inline" />
         {pendingCount > 0 && (
           <div className="split-btn">
             <button
@@ -148,17 +140,7 @@ export function RequestsTab() {
         )}
       </PageHeader>
 
-      <section className="approval-card">
-        <RequireApprovalSwitch className="switch-row approval-card__switch" />
-      </section>
-      {!requireApproval && (
-        <div className="banner banner--info" role="status">
-          <Info size={18} aria-hidden />
-          <span>
-            <strong>Approval is off</strong> — guest requests go straight to the queue.
-          </span>
-        </div>
-      )}
+      {state && !state.requests_open && <div className="banner banner--warn">Requests are closed — guests can't send new ones.</div>}
 
       <div className="segmented" role="tablist">
         <button role="tab" aria-selected={view === "pending"} className={cx(view === "pending" && "is-active")} onClick={() => setView("pending")}>
@@ -174,14 +156,7 @@ export function RequestsTab() {
       ) : list.length === 0 ? (
         <div className="empty-state">
           {view === "pending" ? (
-            <>
-              <strong>{requireApproval ? "All caught up" : "Nothing to approve"}</strong>
-              <span>
-                {requireApproval
-                  ? "New requests show up here instantly."
-                  : "Requests are being queued automatically. See History for what guests asked for."}
-              </span>
-            </>
+            <strong>{requireApproval ? "All caught up" : "Requests go straight to the queue"}</strong>
           ) : (
             <span>No decisions yet.</span>
           )}
@@ -193,6 +168,7 @@ export function RequestsTab() {
               key={r.id}
               track={r.track}
               className="card-row"
+              wrap
               meta={
                 <span className="muted">
                   {r.guest_label} · {timeAgo(r.created_at, clockOffset)}
@@ -231,7 +207,7 @@ export function RequestsTab() {
                   </div>
                 ) : (
                   r.status === "approved" && !r.decided_by ? (
-                    <span className="badge badge--approved badge--auto" title="Approved automatically while approval was off">
+                    <span className="badge badge--approved" title="Approved automatically while approval was off">
                       Auto-approved
                     </span>
                   ) : (

@@ -1,5 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Suspense, useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { api, ApiError } from "../api/client";
 import type { SongRequest, Track } from "../api/types";
 import { useLive } from "../hooks/live";
@@ -9,10 +8,9 @@ import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { Artwork } from "../components/Artwork";
 import { ProgressBar } from "../components/ProgressBar";
 import { TrackRow } from "../components/TrackRow";
-import { StatusBadge } from "../components/StatusBadge";
 import { Check, Search, X } from "lucide-react";
 import { LazyToaster, lazyToast as toast } from "../components/lazyToast";
-import { artworkAt, cx, timeAgo } from "../util";
+import { artworkAt, cx } from "../util";
 import "../styles/request.css";
 
 type Tab = "search" | "mine" | "queue";
@@ -103,9 +101,11 @@ export function RequestPage() {
 
   const requested = useMemo(() => {
     const m = new Map<string, SongRequest["status"]>();
-    for (const r of mine) if (r.status !== "rejected") m.set(r.track.id, r.status);
+    for (const r of mine) if (r.status === "pending" || r.status === "approved") m.set(r.track.id, r.status);
     return m;
   }, [mine]);
+  const myIds = useMemo(() => new Set(mine.map((r) => r.id)), [mine]);
+  const shownMine = useMemo(() => mine.filter((r) => r.status !== "withdrawn"), [mine]);
   const queuedIds = useMemo(() => {
     const s = new Set<string>();
     state?.upcoming.forEach((u) => s.add(u.track.id));
@@ -132,47 +132,75 @@ export function RequestPage() {
     }
   };
 
+  const withdraw = async (r: SongRequest) => {
+    setMine((m) => m.map((x) => (x.id === r.id ? { ...x, status: "withdrawn" } : x)));
+    try {
+      await api.withdrawRequest(r.id);
+      toast.success(`Withdrew “${r.track.title}”.`, { duration: 3000 });
+    } catch (e) {
+      toast.error(
+        e instanceof ApiError && e.status === 409 ? "Too late — it's already about to play." : friendlyError(e),
+        { duration: 4500 },
+      );
+    } finally {
+      loadMine();
+    }
+  };
+
   const closed = state ? !state.requests_open : false;
   const pendingCount = mine.filter((r) => r.status === "pending").length;
+  const tabProps = (t: Tab) => ({
+    role: "tab" as const,
+    id: `tab-${t}`,
+    "aria-selected": tab === t,
+    "aria-controls": `panel-${t}`,
+    tabIndex: tab === t ? 0 : -1,
+    className: cx("tab", tab === t && "is-active"),
+    onClick: () => setTab(t),
+  });
+  const onTabKey = (e: KeyboardEvent) => {
+    const order: Tab[] = ["search", "mine", "queue"];
+    const i = order.indexOf(tab);
+    const next = e.key === "ArrowRight" ? order[(i + 1) % 3] : e.key === "ArrowLeft" ? order[(i + 2) % 3] : null;
+    if (!next) return;
+    e.preventDefault();
+    setTab(next);
+    document.getElementById(`tab-${next}`)?.focus();
+  };
 
   return (
     <div className="req">
       <div className="req__glow" aria-hidden />
       <header className="req__header">
-        <Link to="/" className="req__party">
-          {state?.party_name || "Encore"}
-        </Link>
-        <span className="req__sub">Request a song</span>
+        <h1 className="req__party">{state?.party_name || "Encore"}</h1>
       </header>
 
       {np && (
         <div className="req-np">
           <Artwork url={np.artwork_url} size={200} className="req-np__art" />
           <div className="req-np__text">
-            <div className="eyebrow">{state?.paused ? "Paused" : "Now playing"}</div>
             <div className="req-np__title truncate">{np.title}</div>
-            <div className="req-np__artist truncate">{np.artist}</div>
+            <div className="req-np__artist truncate">
+              {state?.paused ? "Paused · " : ""}
+              {np.artist}
+            </div>
             <ProgressBar position={position} duration={np.duration} compact />
           </div>
         </div>
       )}
 
-      {closed && <div className="banner banner--warn">Requests are closed right now — check back later.</div>}
+      {closed && <div className="banner banner--warn">Requests are closed right now.</div>}
 
-      <nav className="tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "search"} className={cx("tab", tab === "search" && "is-active")} onClick={() => setTab("search")}>
-          Search
-        </button>
-        <button role="tab" aria-selected={tab === "mine"} className={cx("tab", tab === "mine" && "is-active")} onClick={() => setTab("mine")}>
+      <nav className="tabs" role="tablist" aria-label="Request a song" onKeyDown={onTabKey}>
+        <button {...tabProps("search")}>Search</button>
+        <button {...tabProps("mine")}>
           My requests{pendingCount > 0 && <span className="tab__count">{pendingCount}</span>}
         </button>
-        <button role="tab" aria-selected={tab === "queue"} className={cx("tab", tab === "queue" && "is-active")} onClick={() => setTab("queue")}>
-          Up next{state && state.upcoming.length > 0 && <span className="tab__count">{state.upcoming.length}</span>}
-        </button>
+        <button {...tabProps("queue")}>Up next</button>
       </nav>
 
       {tab === "search" && (
-        <section>
+        <section role="tabpanel" id="panel-search" aria-labelledby="tab-search">
           <div className="search">
             <Search size={20} className="search__icon" aria-hidden />
             <input
@@ -230,40 +258,33 @@ export function RequestPage() {
               })}
             </div>
           )}
-          {!results && !searching && !searchError && !closed && (
-            <p className="hint">
-              Find a song and tap <strong>Request</strong>.{" "}
-              {state?.require_approval === false
-                ? "It goes straight into the queue."
-                : "The host approves every request before it plays."}
-            </p>
+          {!results && !searching && !searchError && !closed && state?.require_approval !== false && (
+            <p className="hint">The host approves requests before they play.</p>
           )}
         </section>
       )}
 
       {tab === "mine" && (
-        <section className="list">
-          {mine.length === 0 ? (
+        <section className="list" role="tabpanel" id="panel-mine" aria-labelledby="tab-mine">
+          {shownMine.length === 0 ? (
             <p className="empty">You haven't requested anything yet.</p>
           ) : (
-            mine.map((r) => (
-              <TrackRow
-                key={r.id}
-                track={r.track}
-                meta={<span className="muted">{timeAgo(r.created_at, clockOffset)}</span>}
-                actions={<StatusBadge status={r.status} />}
-                dim={r.status === "rejected"}
-              />
-            ))
+            shownMine.map((r) => <MyRequestRow key={r.id} r={r} nowPlayingId={np?.id ?? null} onWithdraw={() => withdraw(r)} />)
           )}
-          {mine.length > 0 && <p className="hint">Updates automatically.</p>}
         </section>
       )}
 
       {tab === "queue" && (
-        <section className="list">
+        <section className="list" role="tabpanel" id="panel-queue" aria-labelledby="tab-queue">
           {state && state.upcoming.length > 0 ? (
-            state.upcoming.map((q, i) => <TrackRow key={q.id} track={q.track} index={i + 1} />)
+            state.upcoming.map((q, i) => (
+              <TrackRow
+                key={q.id}
+                track={q.track}
+                index={i + 1}
+                actions={q.request_id != null && myIds.has(q.request_id) ? <span className="yours">Yours</span> : undefined}
+              />
+            ))
           ) : (
             <p className="empty">Nothing queued yet — your request could be next!</p>
           )}
@@ -277,6 +298,69 @@ export function RequestPage() {
         <LazyToaster />
       </Suspense>
     </div>
+  );
+}
+
+function fmtEta(sec: number): string {
+  if (sec < 60) return "under a minute";
+  const m = Math.round(sec / 60);
+  return m < 60 ? `~${m} min` : `~${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** One of the guest's own requests: where it is, and a two-step Withdraw while that's still possible. */
+function MyRequestRow({ r, nowPlayingId, onWithdraw }: { r: SongRequest; nowPlayingId: string | null; onWithdraw: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    if (!confirming) return;
+    const t = window.setTimeout(() => setConfirming(false), 5000);
+    return () => window.clearTimeout(t);
+  }, [confirming]);
+
+  let status: string;
+  let tone: "wait" | "queued" | "live" | "done" = "done";
+  if (r.status === "pending") {
+    status = "Waiting for approval";
+    tone = "wait";
+  } else if (r.status === "approved" && r.queue_position != null) {
+    status = r.queue_position === 1 ? "Up next" : `#${r.queue_position} in queue`;
+    if (r.eta_seconds != null) status += ` · ${fmtEta(r.eta_seconds)}`;
+    tone = "queued";
+  } else if (r.status === "approved" && nowPlayingId === r.track.id) {
+    status = "Playing now";
+    tone = "live";
+  } else if (r.status === "approved") {
+    status = "Played";
+  } else {
+    status = "Not this time";
+  }
+
+  return (
+    <TrackRow
+      track={r.track}
+      wrap
+      dim={r.status === "rejected"}
+      meta={<span className={`req-status req-status--${tone}`}>{status}</span>}
+      actions={
+        r.can_withdraw ? (
+          confirming ? (
+            <div className="btn-group">
+              <button type="button" className="icon-btn" onClick={() => setConfirming(false)} aria-label="Keep this request" title="Keep">
+                <X size={18} />
+              </button>
+              <button type="button" className="btn btn--danger-ghost btn--sm" onClick={onWithdraw} autoFocus>
+                Withdraw
+              </button>
+            </div>
+          ) : (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setConfirming(true)} aria-label={`Withdraw “${r.track.title}”`}>
+              Withdraw
+            </button>
+          )
+        ) : (
+          <span />
+        )
+      }
+    />
   );
 }
 

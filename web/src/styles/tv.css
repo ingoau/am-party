@@ -163,10 +163,6 @@
   display: flex;
   flex-direction: column;
 }
-.tv .eyebrow {
-  font-size: clamp(0.75rem, 0.95vw, 1.1rem);
-  margin-bottom: clamp(6px, 1vh, 16px);
-}
 .tv__title {
   font-family: var(--font-display);
   font-size: clamp(2rem, 4.6vw, 6.2rem);
@@ -204,16 +200,6 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: break-word;
-  flex: none;
-}
-.tv__album {
-  margin-top: 2px;
-  font-size: clamp(0.95rem, 1.3vw, 1.7rem);
-  line-height: 1.35;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   flex: none;
 }
 .tv .progress {
@@ -301,15 +287,6 @@
 .upnext__artist {
   color: var(--muted);
   font-size: clamp(0.85rem, 1vw, 1.3rem);
-}
-.upnext__tag {
-  flex: none;
-  font-size: clamp(0.7rem, 0.8vw, 1rem);
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 .upnext__more,
 .upnext__empty {
@@ -507,15 +484,15 @@
   padding: clamp(10px, 1vw, 18px);
   padding-right: clamp(16px, 1.6vw, 32px);
   border-radius: clamp(16px, 1.4vw, 28px);
-  background: rgba(10, 10, 16, 0.5);
-  border: 1px solid var(--border);
+  background: rgba(10, 10, 16, 0.55);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   text-decoration: none;
   flex: none;
 }
 .qr-card__code {
-  width: clamp(96px, 15vh, 220px);
+  /* ~270px at 1080p, ~180px at 720p, 540px at 4K: readable from across the room. */
+  width: clamp(120px, 25vh, 560px);
   aspect-ratio: 1;
   padding: clamp(6px, 0.6vw, 12px);
   background: #fff;
@@ -537,8 +514,11 @@
   line-height: 1.1;
   font-weight: 800;
   letter-spacing: -0.02em;
-  /* "Scan to request / a song" on two lines at any size */
   max-width: 9.5em;
+  text-wrap: balance;
+}
+.tv__request-link {
+  display: none;
 }
 .qr-card__text span {
   color: var(--muted);
@@ -583,10 +563,6 @@
   .tv__artist {
     font-size: clamp(1.05rem, 4.2vw, 1.8rem);
   }
-  .tv__album {
-    font-size: 0.95rem;
-  }
-  .tv .eyebrow,
   .upnext__heading {
     font-size: 0.75rem;
   }
@@ -629,7 +605,7 @@
     align-self: center;
   }
   .qr-card__code {
-    width: 96px;
+    width: clamp(120px, 22vh, 220px);
   }
   .qr-card__text strong {
     font-size: 1.05rem;
@@ -648,3 +624,20 @@
   }
 }
 
+/* ---------- Phones: no QR (the viewer is already on a phone) — a plain link instead ---------- */
+@media (max-width: 640px) {
+  .qr-card {
+    display: none;
+  }
+  .tv__request-link {
+    display: inline-flex;
+    align-self: center;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 22px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    font-weight: 700;
+    text-decoration: none;
+  }
+}

@@ -63,6 +63,7 @@ export const api = {
   search: (q: string, signal?: AbortSignal) =>
     request<{ tracks: Track[] }>("GET", `/api/search?q=${enc(q)}`, undefined, signal),
   createRequest: (track_id: string) => request<{ request: SongRequest }>("POST", "/api/requests", { track_id }),
+  withdrawRequest: (id: number) => request<unknown>("DELETE", `/api/requests/${id}`),
   myRequests: () => request<{ requests: SongRequest[] }>("GET", "/api/requests/mine"),
   me: () => request<Me>("GET", "/api/me"),
   logout: () => request<unknown>("POST", "/auth/logout"),

@@ -16,6 +16,8 @@ export type QueueItem = {
   id: number;
   track: Track;
   source: Source;
+  /** Set for approved guest requests (match against /api/requests/mine). */
+  request_id?: number | null;
 };
 
 export type NowPlaying = Track & {
@@ -38,12 +40,18 @@ export type State = {
   public_url?: string; // configured public base URL, used for the QR code
 };
 
-export type RequestStatus = "pending" | "approved" | "rejected";
+export type RequestStatus = "pending" | "approved" | "rejected" | "withdrawn";
 
 export type SongRequest = {
   id: number;
   track: Track;
   status: RequestStatus;
+  /** /api/requests/mine only: 1-based position in upcoming while queued. */
+  queue_position?: number;
+  /** /api/requests/mine only: estimated seconds until it starts. */
+  eta_seconds?: number;
+  /** /api/requests/mine only. */
+  can_withdraw?: boolean;
   created_at: number;
   decided_at: number | null;
   decided_by: string | null;

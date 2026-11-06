@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import * as Tooltip from "@radix-ui/react-tooltip";
 import { Check, ChevronDown, Info, Minus, Shield, ShieldCheck, ShieldOff, Trash2, UserMinus, UserPlus, X } from "lucide-react";
 import { api } from "../../api/client";
 import { ALL_PERMISSIONS, type Permission, type PermissionInfo, type User } from "../../api/types";
@@ -9,7 +8,7 @@ import { cx, timeAgo } from "../../util";
 import { initials } from "./AdminApp";
 import { PageHeader, flash } from "./common";
 import { useConfirm } from "./ConfirmDialog";
-import { PRESETS, groupCatalog, usePermissionCatalog, type PermissionGroup } from "./permissions";
+import { PRESETS, groupCatalog, usePermissionCatalog, type PermissionGroup, type Preset } from "./permissions";
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -17,6 +16,13 @@ export function UsersTab({ me }: { me: User }) {
   const [users, setUsers] = useState<User[] | null>(null);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  const toggleExpanded = (id: number) =>
+    setExpanded((s) => {
+      const next = new Set(s);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
   const catalog = usePermissionCatalog();
   const groups = useMemo(() => groupCatalog(catalog), [catalog]);
   const [confirmDialog, confirm] = useConfirm();
@@ -49,6 +55,20 @@ export function UsersTab({ me }: { me: User }) {
     patchLocal(u.id, (x) => ({ ...x, granted, permissions: granted }));
     try {
       await api.patchUser(u.id, { permissions: granted });
+    } catch (e) {
+      flash.err(e);
+    } finally {
+      load();
+    }
+  };
+
+  /** One-tap role for someone waiting for access. */
+  const grantPreset = async (u: User, preset: Preset) => {
+    const granted = [...new Set([...u.granted, ...preset.permissions])];
+    patchLocal(u.id, (x) => ({ ...x, granted, permissions: granted }));
+    try {
+      await api.patchUser(u.id, { permissions: granted });
+      flash.ok(`${u.name} is now ${preset.id === "approver" ? "an" : "a"} ${preset.label}`);
     } catch (e) {
       flash.err(e);
     } finally {
@@ -147,73 +167,61 @@ export function UsersTab({ me }: { me: User }) {
   const someSelected = selected.size > 0 && !allSelected;
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(users?.map((u) => u.id)));
 
-  const waiting = users?.filter((u) => !u.is_admin && u.permissions.length === 0).length ?? 0;
-  const nPermCols = catalog.length;
+  const isWaiting = (u: User) => !u.is_admin && u.granted.length === 0;
+  const waiting = users?.filter(isWaiting) ?? [];
+  const team = users?.filter((u) => !isWaiting(u)) ?? [];
+  const row = (u: User) => (
+    <UserRow
+      key={u.id}
+      user={u}
+      isMe={u.id === me.id}
+      groups={groups}
+      selected={selected.has(u.id)}
+      expanded={expanded.has(u.id)}
+      onExpand={() => toggleExpanded(u.id)}
+      onSelect={() => toggleSelect(u.id)}
+      onToggle={(p) => togglePerm(u, p)}
+      onToggleAdmin={() => toggleAdmin(u)}
+      onPreset={(preset) => grantPreset(u, preset)}
+      onRemove={() => remove(u)}
+    />
+  );
 
   return (
-    <Tooltip.Provider delayDuration={250}>
+    <>
       <div className="page page--people">
-        <PageHeader
-          title="People"
-          sub={
-            waiting > 0
-              ? `${plural(waiting, "person is", "people are")} waiting for access.`
-              : "Everyone who has signed in to the host panel."
-          }
-        />
+        <PageHeader title="People" />
         {users === null ? (
           <div className="spinner" />
         ) : (
-          <div className="people" style={{ ["--perm-cols" as string]: nPermCols }}>
+          <div className="people">
             <div className="people__toolbar">
               <label className="people__select-all">
                 <Checkbox checked={allSelected} indeterminate={someSelected} onChange={toggleAll} aria-label="Select everyone" />
-                <span>{selected.size > 0 ? `${selected.size} of ${users.length} selected` : `Select all ${users.length}`}</span>
+                <span>{selected.size > 0 ? `${selected.size} of ${users.length} selected` : "Select all"}</span>
               </label>
               <PermissionGuide groups={groups} />
             </div>
 
-            <div className="ugrid-head" aria-hidden>
-              <div className="ugrid-head__row ugrid-head__row--groups">
-                <span />
-                <span />
-                {groups.map((g) => (
-                  <span key={g.name} className="ugrid-head__group" style={{ gridColumn: `span ${g.items.length}` }}>
-                    {g.name}
-                  </span>
-                ))}
-                <span className="ugrid-head__group">Access</span>
-                <span />
-              </div>
-              <div className="ugrid-head__row">
-                <span />
-                <span className="ugrid-head__label">Person</span>
-                {groups.flatMap((g) => g.items).map((p) => (
-                  <HeaderTip key={p.id} label={p.label} tip={p.description} />
-                ))}
-                <HeaderTip label="Admin" tip="Every permission, plus managing people and settings" />
-                <span />
-              </div>
-            </div>
-
-            <ul className="ugrid" aria-label="People">
-              {users.map((u) => (
-                <UserRow
-                  key={u.id}
-                  user={u}
-                  isMe={u.id === me.id}
-                  groups={groups}
-                  selected={selected.has(u.id)}
-                  onSelect={() => toggleSelect(u.id)}
-                  onToggle={(p) => togglePerm(u, p)}
-                  onToggleAdmin={() => toggleAdmin(u)}
-                  onRemove={() => remove(u)}
-                />
-              ))}
-            </ul>
+            {waiting.length > 0 && (
+              <>
+                <h2 className="section-title">
+                  Waiting for access <span className="muted">{waiting.length}</span>
+                </h2>
+                <ul className="ulist" aria-label="Waiting for access">
+                  {waiting.map(row)}
+                </ul>
+                {team.length > 0 && <h2 className="section-title">Team</h2>}
+              </>
+            )}
+            {team.length > 0 && (
+              <ul className="ulist" aria-label="Team">
+                {team.map(row)}
+              </ul>
+            )}
           </div>
         )}
-        <p className="hint">New people appear here after they sign in. The first person to sign in becomes an admin.</p>
+        <p className="hint">People appear here after they sign in.</p>
 
         {selectedUsers.length > 0 && (
           <div className="bulk-bar" role="region" aria-label="Bulk actions">
@@ -275,7 +283,7 @@ export function UsersTab({ me }: { me: User }) {
         )}
         {confirmDialog}
       </div>
-    </Tooltip.Provider>
+    </>
   );
 }
 
@@ -284,23 +292,31 @@ function UserRow({
   isMe,
   groups,
   selected,
+  expanded,
+  onExpand,
   onSelect,
   onToggle,
   onToggleAdmin,
+  onPreset,
   onRemove,
 }: {
   user: User;
   isMe: boolean;
   groups: PermissionGroup[];
   selected: boolean;
+  expanded: boolean;
+  onExpand: () => void;
   onSelect: () => void;
   onToggle: (p: Permission) => void;
   onToggleAdmin: () => void;
+  onPreset: (p: Preset) => void;
   onRemove: () => void;
 }) {
   const role = roleOf(u);
+  const waiting = !u.is_admin && u.granted.length === 0;
+  const panelId = `perms-${u.id}`;
   return (
-    <li className={cx("urow", selected && "is-selected", u.is_admin && "is-admin")}>
+    <li className={cx("urow", selected && "is-selected", expanded && "is-expanded", waiting && "is-waiting")}>
       <div className="urow__select">
         <Checkbox checked={selected} onChange={onSelect} aria-label={`Select ${u.name}`} />
       </div>
@@ -314,7 +330,6 @@ function UserRow({
           <div className="person__name">
             <span className="truncate">{u.name}</span>
             {isMe && <span className="muted person__you">you</span>}
-            <span className={cx("badge", role.className)}>{role.label}</span>
           </div>
           <div className="muted truncate">
             {u.email ?? ""}
@@ -322,34 +337,27 @@ function UserRow({
           </div>
         </div>
       </div>
-      <div className="urow__perms">
-        {u.is_admin && <p className="urow__admin-note">Admins have every permission.</p>}
-        {groups.map((g) => (
-          <div className="urow__group" key={g.name}>
-            <div className="urow__group-name">{g.name}</div>
-            {g.items.map((p) => (
-              <PermSwitch
-                key={p.id}
-                info={p}
-                checked={u.is_admin || u.granted.includes(p.id)}
-                disabled={u.is_admin}
-                onChange={() => onToggle(p.id)}
-                who={u.name}
-              />
-            ))}
-          </div>
-        ))}
-        <div className="urow__group urow__group--admin">
-          <div className="urow__group-name">Access</div>
-          <PermSwitch
-            info={{ label: "Admin", description: "Every permission, plus people and settings" }}
-            checked={u.is_admin}
-            onChange={onToggleAdmin}
-            who={u.name}
-            admin
-          />
+      {waiting && (
+        <div className="urow__quick">
+          {PRESETS.map((p) => (
+            <button key={p.id} type="button" className="btn btn--sm" onClick={() => onPreset(p)} title={p.description}>
+              Make {p.label}
+            </button>
+          ))}
         </div>
-      </div>
+      )}
+      <button
+        type="button"
+        className={cx("role-btn", role.className)}
+        onClick={onExpand}
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        aria-label={`${role.label} — edit permissions for ${u.name}`}
+        title="Edit permissions"
+      >
+        <span>{role.label}</span>
+        <ChevronDown size={14} className="role-btn__chev" aria-hidden />
+      </button>
       <div className="urow__actions">
         <button
           className="icon-btn icon-btn--danger"
@@ -361,18 +369,51 @@ function UserRow({
           <Trash2 size={18} />
         </button>
       </div>
+      {expanded && (
+        <div className="urow__perms" id={panelId}>
+          {groups.map((g) => (
+            <div className="urow__group" key={g.name}>
+              <div className="urow__group-name">{g.name}</div>
+              <div className="urow__pills">
+                {g.items.map((p) => (
+                  <PermSwitch
+                    key={p.id}
+                    info={p}
+                    checked={u.is_admin || u.granted.includes(p.id)}
+                    disabled={u.is_admin}
+                    onChange={() => onToggle(p.id)}
+                    who={u.name}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="urow__group">
+            <div className="urow__group-name">Access</div>
+            <div className="urow__pills">
+              <PermSwitch
+                info={{ label: "Admin", description: "Every permission, plus people and settings" }}
+                checked={u.is_admin}
+                onChange={onToggleAdmin}
+                who={u.name}
+                admin
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </li>
   );
 }
 
 function roleOf(u: User): { label: string; className: string } {
-  if (u.is_admin) return { label: "Admin", className: "badge--admin" };
-  if (u.granted.length === 0) return { label: "No access", className: "badge--pending" };
+  if (u.is_admin) return { label: "Admin", className: "role-btn--admin" };
+  if (u.granted.length === 0) return { label: "No access", className: "role-btn--none" };
   const set = new Set(u.granted);
   const matched = PRESETS.filter((p) => p.permissions.every((x) => set.has(x)));
   const covered = new Set(matched.flatMap((p) => p.permissions));
-  if (matched.length && u.granted.every((x) => covered.has(x))) return { label: matched.map((p) => p.label).join(" + "), className: "badge--request" };
-  return { label: `Custom · ${u.granted.length}`, className: "badge--custom" };
+  if (matched.length && u.granted.every((x) => covered.has(x))) return { label: matched.map((p) => p.label).join(" + "), className: "role-btn--role" };
+  return { label: `Custom · ${u.granted.length}`, className: "role-btn--role" };
 }
 
 function PermSwitch({
@@ -427,31 +468,13 @@ function Checkbox({
   );
 }
 
-function HeaderTip({ label, tip }: { label: string; tip: string }) {
-  return (
-    <Tooltip.Root>
-      <Tooltip.Trigger asChild>
-        <span className="ugrid-head__label ugrid-head__label--perm" tabIndex={-1}>
-          {label}
-        </span>
-      </Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Content className="tooltip" side="top" sideOffset={6} collisionPadding={12}>
-          {tip}
-          <Tooltip.Arrow className="tooltip__arrow" />
-        </Tooltip.Content>
-      </Tooltip.Portal>
-    </Tooltip.Root>
-  );
-}
-
 /** "What do these mean?" — labels + descriptions for every permission, usable on touch devices too. */
 function PermissionGuide({ groups }: { groups: PermissionGroup[] }) {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button className="btn btn--ghost btn--sm">
-          <Info size={16} /> What can each permission do?
+          <Info size={16} /> About permissions
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>

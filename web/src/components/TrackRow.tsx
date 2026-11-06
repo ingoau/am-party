@@ -12,6 +12,7 @@ export function TrackRow({
   dim,
   index,
   lead,
+  wrap,
 }: {
   track: Track;
   meta?: ReactNode;
@@ -21,6 +22,8 @@ export function TrackRow({
   index?: number;
   /** Optional leading element (e.g. a drag handle). */
   lead?: ReactNode;
+  /** Let long titles wrap onto a second line instead of truncating. */
+  wrap?: boolean;
 }) {
   return (
     <div className={cx("track-row", dim && "track-row--dim", className)}>
@@ -28,8 +31,10 @@ export function TrackRow({
       {index !== undefined && <span className="track-row__index">{index}</span>}
       <Artwork url={track.artwork_url} size={120} className="track-row__art" />
       <div className="track-row__text">
-        <div className="track-row__title">
-          <span className="truncate">{track.title}</span>
+        <div className={cx("track-row__title", wrap && "track-row__title--wrap")}>
+          <span className="truncate" title={track.title}>
+            {track.title}
+          </span>
           {track.explicit && <SquareLetterE size={14} className="explicit" role="img" aria-label="Explicit" />}
         </div>
         <div className="track-row__sub truncate">

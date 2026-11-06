@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api/client";
 import type { AdminStatus, AppleMusicStatus, CrossfadeMode, Playlist, Settings } from "../../api/types";
 import { Artwork } from "../../components/Artwork";
@@ -7,11 +7,35 @@ import { cx, fmtDate } from "../../util";
 import { PageHeader, flash } from "./common";
 import { RequireApprovalSwitch } from "./RequireApprovalSwitch";
 
+type SaveState = "idle" | "saving" | "saved" | "error";
+type SetSetting = <K extends keyof Settings>(k: K, v: Settings[K], debounceMs?: number) => void;
+
+/** Fields that are not sent through PATCH /api/admin/settings. */
+const LOCAL_ONLY: (keyof Settings)[] = ["require_approval"];
+
+function diff(draft: Settings, saved: Settings): Partial<Settings> {
+  const p: Partial<Settings> = {};
+  (Object.keys(draft) as (keyof Settings)[]).forEach((k) => {
+    if (LOCAL_ONLY.includes(k)) return; // applied immediately via its own endpoint (RequireApprovalSwitch)
+    if (k === "party_name" && !draft.party_name.trim()) return; // never save an empty name
+    if (draft[k] !== saved[k]) (p as Record<string, unknown>)[k] = draft[k];
+  });
+  return p;
+}
+
+/**
+ * Every setting applies as soon as it changes (text and number fields after a short pause in
+ * typing), with a small "Saved" indicator in the header instead of a save bar.
+ */
 export function SettingsTab() {
-  const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [status, setStatus] = useState<AdminStatus | null>(null);
+  const draftRef = useRef<Settings | null>(null);
+  const savedRef = useRef<Settings | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  const inflight = useRef(false);
+  const again = useRef(false);
 
   const loadStatus = useCallback(() => {
     api.status().then(setStatus).catch(() => setStatus(null));
@@ -21,51 +45,94 @@ export function SettingsTab() {
     api
       .settings()
       .then((s) => {
-        setSaved(s);
+        savedRef.current = s;
+        draftRef.current = s;
         setDraft(s);
       })
       .catch(flash.err);
     loadStatus();
     const t = window.setInterval(loadStatus, 15_000);
     return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadStatus]);
 
-  const patch = useMemo(() => {
-    if (!saved || !draft) return {};
-    const p: Partial<Settings> = {};
-    (Object.keys(draft) as (keyof Settings)[]).forEach((k) => {
-      // require_approval applies immediately via its own endpoint (see RequireApprovalSwitch).
-      if (k === "require_approval") return;
-      if (draft[k] !== saved[k]) (p as Record<string, unknown>)[k] = draft[k];
-    });
-    return p;
-  }, [saved, draft]);
-  const dirty = Object.keys(patch).length > 0;
-
-  const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setDraft((d) => (d ? { ...d, [k]: v } : d));
-
-  const save = async () => {
-    if (!dirty) return;
-    setSaving(true);
+  const flush = useCallback(async () => {
+    window.clearTimeout(timer.current);
+    const sent = draftRef.current;
+    const saved = savedRef.current;
+    if (!sent || !saved) return;
+    if (inflight.current) {
+      again.current = true;
+      return;
+    }
+    const patch = diff(sent, saved);
+    if (Object.keys(patch).length === 0) return;
+    inflight.current = true;
+    setSaveState("saving");
     try {
       const s = await api.patchSettings(patch);
-      // Backend returns Settings; fall back to merging if it returns something else.
-      const next = s && typeof s === "object" && "party_name" in s ? s : { ...saved!, ...patch };
-      setSaved(next);
-      setDraft(next);
-      flash.ok("Settings saved");
+      const next = s && typeof s === "object" && "party_name" in s ? s : { ...saved, ...patch };
+      savedRef.current = next;
+      // Keep anything edited while the request was in flight.
+      const cur = draftRef.current ?? sent;
+      const merged = { ...next };
+      (Object.keys(cur) as (keyof Settings)[]).forEach((k) => {
+        if (cur[k] !== sent[k]) (merged as Record<string, unknown>)[k] = cur[k];
+      });
+      draftRef.current = merged;
+      setDraft(merged);
+      setSaveState("saved");
       loadStatus();
     } catch (e) {
       flash.err(e);
+      setSaveState("error");
+      draftRef.current = savedRef.current;
+      setDraft(savedRef.current);
     } finally {
-      setSaving(false);
+      inflight.current = false;
+      if (again.current) {
+        again.current = false;
+        void flush();
+      }
     }
-  };
+  }, [loadStatus]);
+
+  // Save anything still waiting on its debounce when leaving the page.
+  useEffect(() => () => void flush(), [flush]);
+
+  const set: SetSetting = useCallback(
+    (k, v, debounceMs = 0) => {
+      if (!draftRef.current) return;
+      draftRef.current = { ...draftRef.current, [k]: v };
+      setDraft(draftRef.current);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => void flush(), debounceMs);
+    },
+    [flush],
+  );
+
+  useEffect(() => {
+    if (saveState !== "saved") return;
+    const t = window.setTimeout(() => setSaveState("idle"), 2500);
+    return () => window.clearTimeout(t);
+  }, [saveState]);
+
+  const smartUnavailable = !!status && !status.smart_fades.available;
 
   return (
     <div className="page page--settings">
-      <PageHeader title="Settings" sub="Changes apply to everyone at the party." />
+      <PageHeader title="Settings">
+        <span className={cx("save-indicator", saveState !== "idle" && "is-shown", saveState === "error" && "is-error")} role="status" aria-live="polite">
+          {saveState === "saving" ? (
+            "Saving…"
+          ) : saveState === "saved" ? (
+            <>
+              <Check size={16} /> Saved
+            </>
+          ) : saveState === "error" ? (
+            "Not saved"
+          ) : null}
+        </span>
+      </PageHeader>
 
       {!draft ? (
         <div className="spinner" />
@@ -75,15 +142,18 @@ export function SettingsTab() {
             <h2 className="card__title">Party</h2>
             <label className="field">
               <span className="field__label">Party name</span>
-              <input className="input" value={draft.party_name} maxLength={80} onChange={(e) => set("party_name", e.target.value)} />
+              <input
+                className="input"
+                value={draft.party_name}
+                maxLength={80}
+                onChange={(e) => set("party_name", e.target.value, 700)}
+                onBlur={() => void flush()}
+              />
             </label>
             <label className="switch-row">
-              <input type="checkbox" checked={draft.requests_open} onChange={(e) => set("requests_open", e.target.checked)} />
+              <input type="checkbox" role="switch" checked={draft.requests_open} onChange={(e) => set("requests_open", e.target.checked)} />
               <span className="switch" aria-hidden />
-              <span>
-                Requests open
-                <small>Guests can search and request songs.</small>
-              </span>
+              <span>Requests open</span>
             </label>
             <RequireApprovalSwitch />
           </section>
@@ -91,33 +161,38 @@ export function SettingsTab() {
           <FallbackCard draft={draft} set={set} />
 
           <section className="card">
-            <h2 className="card__title">Transitions</h2>
+            <h2 className="card__title">Crossfade</h2>
             <div className="field">
-              <span className="field__label">Crossfade</span>
               <div className="segmented" role="radiogroup" aria-label="Crossfade mode">
-                {(["smart", "standard", "off"] as CrossfadeMode[]).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    role="radio"
-                    aria-checked={draft.crossfade_mode === m}
-                    className={cx(draft.crossfade_mode === m && "is-active")}
-                    onClick={() => set("crossfade_mode", m)}
-                  >
-                    {m === "smart" ? "Smart" : m === "standard" ? "Standard" : "Off"}
-                  </button>
-                ))}
+                {(["smart", "standard", "off"] as CrossfadeMode[]).map((m) => {
+                  const disabled = m === "smart" && smartUnavailable && draft.crossfade_mode !== "smart";
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={draft.crossfade_mode === m}
+                      className={cx(draft.crossfade_mode === m && "is-active")}
+                      disabled={disabled}
+                      title={disabled ? "Smart fades are unavailable on this server" : undefined}
+                      onClick={() => set("crossfade_mode", m)}
+                    >
+                      {m === "smart" ? "Smart" : m === "standard" ? "Standard" : "Off"}
+                    </button>
+                  );
+                })}
               </div>
               <span className="field__hint">
                 {draft.crossfade_mode === "smart"
-                  ? "Beat-matched DJ-style transitions."
+                  ? "Beat-matched, DJ-style transitions."
                   : draft.crossfade_mode === "standard"
                     ? "A simple fade between tracks."
                     : "Tracks play back to back."}
-                {draft.crossfade_mode === "smart" && status && !status.smart_fades.available && (
+                {smartUnavailable && (
                   <span className="warn-text">
                     {" "}
-                    Smart fades are unavailable{status.smart_fades.error ? ` (${status.smart_fades.error})` : ""} — a standard fade will be used.
+                    Smart fades are unavailable{status?.smart_fades.error ? ` (${status.smart_fades.error})` : ""}
+                    {draft.crossfade_mode === "smart" ? " — a standard fade is used instead." : "."}
                   </span>
                 )}
               </span>
@@ -125,7 +200,7 @@ export function SettingsTab() {
             {draft.crossfade_mode === "standard" && (
               <label className="field">
                 <span className="field__label">
-                  Fade duration <strong>{draft.crossfade_duration}s</strong>
+                  Fade length <span className="field__value">{draft.crossfade_duration} s</span>
                 </span>
                 <input
                   type="range"
@@ -135,7 +210,7 @@ export function SettingsTab() {
                   step={1}
                   value={draft.crossfade_duration}
                   style={{ ["--val" as string]: `${((draft.crossfade_duration - 1) / 14) * 100}%` }}
-                  onChange={(e) => set("crossfade_duration", Number(e.target.value))}
+                  onChange={(e) => set("crossfade_duration", Number(e.target.value), 400)}
                 />
               </label>
             )}
@@ -145,43 +220,31 @@ export function SettingsTab() {
             <h2 className="card__title">Guest limits</h2>
             <div className="field-row">
               <label className="field">
-                <span className="field__label">Max pending requests per guest</span>
+                <span className="field__label">Max waiting requests per guest</span>
                 <input
                   className="input"
                   type="number"
                   min={1}
                   max={100}
                   value={draft.max_pending_per_guest}
-                  onChange={(e) => set("max_pending_per_guest", Math.max(1, Number(e.target.value) || 1))}
+                  onChange={(e) => set("max_pending_per_guest", Math.max(1, Number(e.target.value) || 1), 700)}
+                  onBlur={() => void flush()}
                 />
               </label>
               <label className="field">
-                <span className="field__label">Cooldown between requests (seconds)</span>
+                <span className="field__label">Cooldown between requests (s)</span>
                 <input
                   className="input"
                   type="number"
                   min={0}
                   max={3600}
                   value={draft.request_cooldown_seconds}
-                  onChange={(e) => set("request_cooldown_seconds", Math.max(0, Number(e.target.value) || 0))}
+                  onChange={(e) => set("request_cooldown_seconds", Math.max(0, Number(e.target.value) || 0), 700)}
+                  onBlur={() => void flush()}
                 />
               </label>
             </div>
           </section>
-
-          {dirty && (
-          <div className="save-bar" role="region" aria-label="Unsaved changes">
-            <span>You have unsaved changes</span>
-            <div className="btn-group">
-              <button className="btn btn--ghost" onClick={() => setDraft(saved)} disabled={saving || !dirty}>
-                Discard
-              </button>
-              <button className="btn btn--primary" onClick={save} disabled={saving || !dirty}>
-                {saving ? "Saving…" : "Save changes"}
-              </button>
-            </div>
-          </div>
-          )}
         </>
       )}
 
@@ -191,7 +254,7 @@ export function SettingsTab() {
   );
 }
 
-function FallbackCard({ draft, set }: { draft: Settings; set: <K extends keyof Settings>(k: K, v: Settings[K]) => void }) {
+function FallbackCard({ draft, set }: { draft: Settings; set: SetSetting }) {
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null);
   const [plError, setPlError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
@@ -228,28 +291,22 @@ function FallbackCard({ draft, set }: { draft: Settings; set: <K extends keyof S
 
   return (
     <section className="card">
-      <h2 className="card__title">Fallback playlist</h2>
-      <p className="muted card__sub">Plays when the queue runs dry, so the music never stops.</p>
-      <div className="current-pl">
-        <span className="field__label">Selected</span>
-        <div className="current-pl__row">
-          <strong>{draft.fallback_playlist_name || (draft.fallback_playlist_id ? draft.fallback_playlist_id : "None")}</strong>
-          {draft.fallback_playlist_id && (
-            <button className="btn btn--ghost btn--sm" type="button" onClick={() => choose(null, null)}>
-              Clear
-            </button>
-          )}
-        </div>
+      <div className="card__head">
+        <h2 className="card__title">Fallback playlist</h2>
+        {draft.fallback_playlist_id && (
+          <button className="btn btn--ghost btn--sm" type="button" onClick={() => choose(null, null)}>
+            Clear
+          </button>
+        )}
       </div>
-
-      <label className="switch-row">
-        <input type="checkbox" checked={draft.fallback_shuffle} onChange={(e) => set("fallback_shuffle", e.target.checked)} />
-        <span className="switch" aria-hidden />
-        <span>Shuffle the fallback playlist</span>
-      </label>
+      <p className="muted card__sub">Plays when the queue is empty.</p>
+      {draft.fallback_playlist_id && !playlists?.some((p) => p.id === draft.fallback_playlist_id) && (
+        <p className="current-pl">
+          <Check size={16} /> <strong>{draft.fallback_playlist_name || draft.fallback_playlist_id}</strong>
+        </p>
+      )}
 
       <div className="field">
-        <span className="field__label">Your library playlists</span>
         {plError ? (
           <div className="banner banner--err">Couldn't load playlists: {plError}</div>
         ) : playlists === null ? (
@@ -277,20 +334,26 @@ function FallbackCard({ draft, set }: { draft: Settings; set: <K extends keyof S
       </div>
 
       <form className="field" onSubmit={resolve}>
-        <span className="field__label">…or paste an Apple Music playlist link</span>
         <div className="input-group">
           <input
             className="input"
-            placeholder="https://music.apple.com/…/playlist/…/pl.…"
+            placeholder="Or paste an Apple Music playlist link"
+            aria-label="Apple Music playlist link"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
           <button className="btn" type="submit" disabled={resolving || !url.trim()}>
-            {resolving ? "Looking up…" : "Use playlist"}
+            {resolving ? "Looking up…" : "Use"}
           </button>
         </div>
         {resolveError && <span className="field__error">{resolveError}</span>}
       </form>
+
+      <label className="switch-row">
+        <input type="checkbox" role="switch" checked={draft.fallback_shuffle} onChange={(e) => set("fallback_shuffle", e.target.checked)} />
+        <span className="switch" aria-hidden />
+        <span>Shuffle</span>
+      </label>
     </section>
   );
 }
@@ -357,7 +420,6 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
         </div>
         <div>
           <h2 className="card__title">Apple Music</h2>
-          <p className="muted card__sub">The catalog guests search and the source of every track.</p>
         </div>
         {am && (
           <span className={cx("pill", am.ok ? "pill--ok" : am.configured ? "pill--err" : "pill--off")}>
@@ -470,37 +532,44 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
   );
 }
 
+function fmtDuration(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const h = Math.floor(m / 60);
+  return h > 0 ? `${h}h ${m % 60}m` : m > 0 ? `${m}m` : `${Math.round(sec)} s`;
+}
+
+/** Engine fields worth showing, in plain words. Anything not listed here is internal and hidden. */
+const ENGINE_FIELDS: Record<string, (v: unknown) => string | null> = {
+  paused: (v) => (v ? "Paused" : "Playing"),
+  state: (v) => (typeof v === "string" ? v.charAt(0).toUpperCase() + v.slice(1) : null),
+  locked_next: (v) => (v ? `Mixing in: ${v}` : null),
+  last_transition: (v) => (typeof v === "string" && v ? `Last transition: ${v}` : null),
+  uptime_seconds: (v) => (typeof v === "number" ? `Uptime ${fmtDuration(v)}` : null),
+  buffer_seconds: (v) => (typeof v === "number" ? `Buffer ${v.toFixed(1)} s` : null),
+  sample_rate: (v) => (typeof v === "number" ? `${(v / 1000).toLocaleString()} kHz` : null),
+  codec: (v) => (typeof v === "string" ? v.toUpperCase() : null),
+};
+
 function StatusCard({ status }: { status: AdminStatus | null }) {
   if (!status) return null;
-  const engine = Object.entries(status.engine ?? {});
+  const engine = status.engine ?? {};
+  const facts = Object.keys(ENGINE_FIELDS)
+    .filter((k) => k in engine)
+    .map((k) => ENGINE_FIELDS[k]!(engine[k]))
+    .filter((x): x is string => !!x);
+  const lastError = typeof engine.last_error === "string" && engine.last_error ? engine.last_error : null;
   return (
     <section className="card">
       <h2 className="card__title">System status</h2>
       <div className="status-grid">
-        <StatusItem label="Apple Music" ok={status.apple_music.ok} text={status.apple_music.ok ? "OK" : status.apple_music.error || (status.apple_music.configured ? "Error" : "Not configured")} />
+        <StatusItem label="Apple Music" ok={status.apple_music.ok} text={status.apple_music.ok ? "Connected" : status.apple_music.error || (status.apple_music.configured ? "Error" : "Not configured")} />
         <StatusItem label="Smart fades" ok={status.smart_fades.available} text={status.smart_fades.available ? "Available" : status.smart_fades.error || "Unavailable"} />
-        <StatusItem label="Listeners" ok text={String(status.listeners)} />
+        <StatusItem label="Listening devices" ok text={String(status.listeners)} />
       </div>
-      {engine.length > 0 && (
-        <dl className="kv kv--compact">
-          {engine.map(([k, v]) => (
-            <div key={k} className="kv__pair">
-              <dt>{k.replace(/_/g, " ")}</dt>
-              <dd>{formatValue(v)}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      {facts.length > 0 && <p className="status-facts">{facts.join(" · ")}</p>}
+      {lastError && <div className="banner banner--err">Last playback error: {lastError}</div>}
     </section>
   );
-}
-
-function formatValue(v: unknown): string {
-  if (v === null || v === undefined) return "—";
-  if (typeof v === "boolean") return v ? "yes" : "no";
-  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(2);
-  if (typeof v === "string") return v;
-  return JSON.stringify(v);
 }
 
 function StatusItem({ label, ok, text }: { label: string; ok: boolean; text: string }) {

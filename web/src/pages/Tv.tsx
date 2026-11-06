@@ -135,20 +135,17 @@ export function TvPage() {
         <section className="tv__info" aria-live="polite">
           {np ? (
             <>
-              <div className="eyebrow">{paused ? "Paused" : "Now playing"}</div>
               <h1 className="tv__title">
                 {np.title}
                 {np.explicit && <SquareLetterE size={28} className="explicit" role="img" aria-label="Explicit" />}
               </h1>
               <div className="tv__artist">{np.artist}</div>
-              {np.album && <div className="tv__album">{np.album}</div>}
               <ProgressBar position={position} duration={np.duration} />
             </>
           ) : (
             <>
-              <div className="eyebrow">{state ? "Silence, for now" : "Connecting"}</div>
               <h1 className="tv__title">{state ? "Waiting for the first track" : "Tuning in…"}</h1>
-              <div className="tv__artist">Scan the code to request a song.</div>
+              {state && <div className="tv__artist">Scan the code to request a song.</div>}
             </>
           )}
 
@@ -163,10 +160,9 @@ export function TvPage() {
                       <div className="upnext__title truncate">{q.track.title}</div>
                       <div className="upnext__artist truncate">{q.track.artist}</div>
                     </div>
-                    {q.source === "request" && <span className="upnext__tag">Requested</span>}
                   </li>
                 ))}
-                {more > 0 && <li className="upnext__more">+ {more} more in the queue</li>}
+                {more > 0 && <li className="upnext__more">+{more} more</li>}
               </ol>
             ) : state?.up_next_fallback ? (
               <ol className="upnext__list upnext__list--fallback">
@@ -180,7 +176,7 @@ export function TvPage() {
                 </li>
               </ol>
             ) : (
-              <div className="upnext__empty">The queue is empty — be the first to request something.</div>
+              <div className="upnext__empty">Nothing queued yet.</div>
             )}
           </div>
         </section>
@@ -245,7 +241,7 @@ export function TvPage() {
               setSyncDelay={sp.setSyncDelay}
               status={sp.status}
             />
-            {!sp.status.listening && <span className="tv-controls__hint">Tap the headphones to listen here</span>}
+            {!sp.status.listening && <span className="tv-controls__hint">Listen on this device</span>}
             <AudioAlert status={sp.status} />
           </div>
         ) : (
@@ -259,6 +255,12 @@ export function TvPage() {
             <span>{requestUrl.replace(/^https?:\/\//, "")}</span>
           </div>
         </Link>
+        {/* Phones: the viewer is already on a phone, so a plain link replaces the QR code. */}
+        {state?.requests_open !== false && (
+          <Link to="/request" className="tv__request-link">
+            Request a song
+          </Link>
+        )}
       </footer>
     </div>
   );
@@ -324,13 +326,38 @@ function SettingsPopover({
       setName(deviceName);
       setDelay(String(syncDelay));
     }
-  }, [open, deviceName, syncDelay]);
+    // Only resync the fields when the popover opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Everything applies live. Renaming reconnects the player, so it's committed on blur / Enter /
+  // close or after a longer pause in typing; the delay applies shortly after typing stops.
+  const commitName = useRef(() => {});
+  commitName.current = () => {
+    if (name.trim() && name.trim() !== deviceName) setDeviceName(name);
+  };
+  useEffect(() => {
+    if (!open) return;
+    const t = window.setTimeout(() => commitName.current(), 1200);
+    return () => window.clearTimeout(t);
+  }, [name, open]);
+  useEffect(() => {
+    if (!open || delay === "" || Number(delay) === syncDelay) return;
+    const t = window.setTimeout(() => setSyncDelay(Number(delay)), 400);
+    return () => window.clearTimeout(t);
+  }, [delay, open, syncDelay, setSyncDelay]);
+
+  const close = useRef(setOpen);
+  close.current = (v: boolean) => {
+    if (!v) commitName.current();
+    setOpen(v);
+  };
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) close.current(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close.current(false);
     document.addEventListener("mousedown", onDown);
     document.addEventListener("touchstart", onDown);
     document.addEventListener("keydown", onKey);
@@ -339,7 +366,7 @@ function SettingsPopover({
       document.removeEventListener("touchstart", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, setOpen]);
+  }, [open]);
 
   return (
     <div className="popover-anchor" ref={ref}>
@@ -349,7 +376,7 @@ function SettingsPopover({
         aria-label="Device settings"
         title="Device settings"
         aria-expanded={open}
-        onClick={() => setOpen(!open)}
+        onClick={() => close.current(!open)}
       >
         <Settings size={22} />
       </button>
@@ -358,14 +385,12 @@ function SettingsPopover({
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (Number(delay) !== syncDelay) setSyncDelay(Number(delay));
-              if (name.trim() !== deviceName) setDeviceName(name);
-              setOpen(false);
+              commitName.current();
             }}
           >
             <div className="field">
               <span className="field__label" id="tv-vol-label">
-                Volume on this device
+                Volume
                 <span className="field__value">{muted ? "Muted" : `${Math.round(volume)}%`}</span>
               </span>
               <input
@@ -381,14 +406,15 @@ function SettingsPopover({
               />
             </div>
             <label className="field">
-              <span className="field__label">This device's name</span>
+              <span className="field__label">Device name</span>
               <input
                 className="input"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                onBlur={() => commitName.current()}
                 maxLength={60}
+                enterKeyHint="done"
               />
-              <span className="field__hint">Shown to the host in the list of speakers.</span>
             </label>
             <label className="field">
               <span className="field__label">Speaker delay (ms)</span>
@@ -402,7 +428,7 @@ function SettingsPopover({
                 value={delay}
                 onChange={(e) => setDelay(e.target.value)}
               />
-              <span className="field__hint">Raise if this device's speakers (Bluetooth, soundbar) sound late vs. the others.</span>
+              <span className="field__hint">Raise if this speaker sounds late compared with the others.</span>
             </label>
             <div className={`sync sync--${status.sync}`} role="status">
               <span className="sync__dot" aria-hidden />
@@ -411,7 +437,6 @@ function SettingsPopover({
             {status.listening && status.codec && <div className="field__hint">Stream: {status.codec}{status.outputLatencyMs !== null ? ` · output latency ${Math.round(status.outputLatencyMs)} ms` : ""}</div>}
             <div className="popover__actions">
               <a className="btn btn--ghost btn--sm" href="/admin">Host panel</a>
-              <button type="submit" className="btn btn--primary btn--sm">Save</button>
             </div>
           </form>
         </div>

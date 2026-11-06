@@ -69,14 +69,7 @@ export function RequireApprovalSwitch({ className }: { className?: string }) {
           onChange={(e) => void change(e.target.checked)}
         />
         <span className="switch" aria-hidden />
-        <span>
-          Require approval
-          <small>
-            {checked
-              ? "Guest requests wait here until someone approves them."
-              : "Off — guest requests go straight into the queue."}
-          </small>
-        </span>
+        <span>Require approval</span>
       </label>
       {confirmDialog}
     </>

@@ -9,6 +9,7 @@
 // MOCK_USER=none|noperm|admin|dj|approver|skipper sets what /auth/login gives you (default admin).
 // /auth/login?as=<user id> signs in as any mock user (handy for testing permission gating).
 // MOCK_NOW_PLAYING=<catalog index> picks the starting track (16 = very long title/artist, 17 = "Dai Dai").
+// /mock/guest?id=x makes this browser guest "x" (who has seeded requests) and opens /request.
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -84,9 +85,9 @@ let nowPlaying = { track: TRACKS[Number(process.env.MOCK_NOW_PLAYING ?? 3) % TRA
 let paused = false;
 let pausedAt = 0;
 let upcoming = [
-  { id: nextId++, track: TRACKS[5], source: "request" },
-  { id: nextId++, track: TRACKS[10], source: "admin" },
-  { id: nextId++, track: TRACKS[14], source: "request" },
+  { id: nextId++, track: TRACKS[5], source: "request", request_id: null },
+  { id: nextId++, track: TRACKS[10], source: "admin", request_id: null },
+  { id: nextId++, track: TRACKS[14], source: "request", request_id: null },
 ];
 let fallbackIdx = 7;
 const requests = [
@@ -99,7 +100,15 @@ const requests = [
   { id: nextId++, track: TRACKS[15], status: "approved", created_at: now() - 1500, decided_at: now() - 1500, decided_by: null, guest_label: "Guest 44B0", guest: "t" },
   { id: nextId++, track: TRACKS[5], status: "approved", created_at: now() - 900, decided_at: now() - 860, decided_by: "Sam Host", guest_label: "Guest 7F3A", guest: "x" },
   { id: nextId++, track: TRACKS[1], status: "rejected", created_at: now() - 1200, decided_at: now() - 1100, decided_by: "Sam Host", guest_label: "Guest 0B12", guest: "z" },
+  { id: nextId++, track: TRACKS[14], status: "approved", created_at: now() - 700, decided_at: now() - 650, decided_by: "Sam Host", guest_label: "Guest 7F3A", guest: "x" },
+  { id: nextId++, track: TRACKS[2], status: "rejected", created_at: now() - 2000, decided_at: now() - 1900, decided_by: "Sam Host", guest_label: "Guest 7F3A", guest: "x" },
 ];
+// Link the seeded approved requests to their queue items.
+for (const r of requests) {
+  if (r.status !== "approved") continue;
+  const item = upcoming.find((u) => u.track.id === r.track.id && u.source === "request" && u.request_id == null);
+  if (item) { item.request_id = r.id; r.queue_item_id = item.id; }
+}
 // ---------- Permissions (mirrors backend/encore/auth.py) ----------
 const PERMISSIONS = [
   { id: "approve_requests", label: "Approve requests", description: "Approve or reject songs guests request", group: "Requests" },
@@ -192,8 +201,22 @@ function approveRequest(r, by, position = "end") {
   r.status = "approved";
   r.decided_at = now();
   r.decided_by = by;
-  const item = { id: nextId++, track: r.track, source: "request" };
+  const item = { id: nextId++, track: r.track, source: "request", request_id: r.id };
+  r.queue_item_id = item.id;
   position === "next" ? upcoming.unshift(item) : upcoming.push(item);
+}
+/** The head of the queue can't change once it's being mixed in (last 15s of the current track). */
+const mixingIn = () => !!nowPlaying && !paused && nowPlaying.started_at + nowPlaying.track.duration - now() < 15;
+/** /api/requests/mine extras: queue position, ETA and whether it can still be withdrawn. */
+function mineView(r) {
+  const out = strip(r, false);
+  if (r.status === "pending") return { ...out, can_withdraw: true };
+  if (r.status !== "approved") return { ...out, can_withdraw: false };
+  const i = upcoming.findIndex((u) => u.id === r.queue_item_id);
+  if (i < 0) return { ...out, can_withdraw: false };
+  const remaining = nowPlaying ? Math.max(0, nowPlaying.started_at + nowPlaying.track.duration - (paused ? pausedAt : now())) : 0;
+  const eta = remaining + upcoming.slice(0, i).reduce((s, u) => s + u.track.duration, 0);
+  return { ...out, queue_position: i + 1, eta_seconds: Math.round(eta), can_withdraw: !(i === 0 && mixingIn()) };
 }
 /** Approve every pending request, oldest first (so "next" keeps their relative order). */
 function approveAllPending(by, position = "end") {
@@ -246,7 +269,7 @@ async function readBody(req) {
   try { return data ? JSON.parse(data) : {}; } catch { return {}; }
 }
 const strip = (r, admin) => {
-  const { guest, ...rest } = r;
+  const { guest, queue_item_id, ...rest } = r;
   return admin ? rest : { ...rest, decided_by: null, guest_label: "" };
 };
 function search(q) {
@@ -315,7 +338,26 @@ const server = http.createServer(async (req, res) => {
     requestsChanged();
     return json(res, 201, { request: strip(r, false) }, guestCookie);
   }
-  if (p === "/api/requests/mine") return json(res, 200, { requests: requests.filter((r) => r.guest === guest).map((r) => strip(r, false)) }, guestCookie);
+  if (p === "/api/requests/mine") return json(res, 200, { requests: requests.filter((r) => r.guest === guest).map(mineView) }, guestCookie);
+  if ((m = p.match(/^\/api\/requests\/(\d+)$/)) && req.method === "DELETE") {
+    const r = requests.find((x) => x.id === Number(m[1]) && x.guest === guest);
+    if (!r) return err(res, 404, "Not found");
+    if (r.status === "approved") {
+      const i = upcoming.findIndex((u) => u.id === r.queue_item_id);
+      if (i < 0 || (i === 0 && mixingIn())) return err(res, 409, "Too late to withdraw that one");
+      upcoming.splice(i, 1);
+      broadcastState();
+    } else if (r.status !== "pending") return err(res, 409, "Can't withdraw that request");
+    r.status = "withdrawn";
+    r.decided_at = now();
+    requestsChanged();
+    return json(res, 200, { ok: true }, guestCookie);
+  }
+  if (p === "/mock/guest") {
+    const id = (url.searchParams.get("id") || "x").replace(/[^\w]/g, "");
+    res.writeHead(302, { Location: "/request", "Set-Cookie": `guest=${id}; Path=/; HttpOnly; SameSite=Lax` });
+    return res.end();
+  }
 
   // Approvers
   if (p === "/api/admin/requests") {
@@ -366,7 +408,7 @@ const server = http.createServer(async (req, res) => {
     const { track_id, position } = await readBody(req);
     const t = byId.get(track_id);
     if (!t) return err(res, 400, "Unknown track");
-    const item = { id: nextId++, track: t, source: "admin" };
+    const item = { id: nextId++, track: t, source: "admin", request_id: null };
     position === "next" ? upcoming.unshift(item) : upcoming.push(item);
     broadcastState();
     return json(res, 201, { item });
@@ -383,7 +425,7 @@ const server = http.createServer(async (req, res) => {
     const i = upcoming.findIndex((u) => u.id === Number(m[1]));
     if (i < 0) return err(res, 404, "Not found");
     // Mirror the backend: the head of the queue can't move once it's being mixed in (last 15s of the current track).
-    if (i === 0 && nowPlaying && !paused && nowPlaying.started_at + nowPlaying.track.duration - now() < 15)
+    if (i === 0 && mixingIn())
       return err(res, 409, "That track is already being mixed in");
     const [it] = upcoming.splice(i, 1);
     upcoming.splice(Math.max(0, Math.min(upcoming.length, index)), 0, it);
@@ -470,7 +512,14 @@ const server = http.createServer(async (req, res) => {
       apple_music: { configured: true, ok: true, error: null },
       smart_fades: { available: false, error: "analysis model not installed" },
       listeners: 4,
-      engine: { state: paused ? "paused" : "playing", buffer_seconds: 8.5, sample_rate: 48000, codec: "flac", uptime_seconds: 5321 },
+      // Same keys as backend/encore/player/engine.py status().
+      engine: {
+        paused,
+        now_playing: nowPlaying?.track.title ?? null,
+        locked_next: upcoming[0]?.track.title ?? null,
+        last_transition: "standard",
+        last_error: null,
+      },
     });
   }
   if (p === "/api/admin/apple-music") {

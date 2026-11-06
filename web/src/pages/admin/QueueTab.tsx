@@ -11,7 +11,7 @@ import {
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToParentElement, restrictToVerticalAxis } from "@dnd-kit/modifiers";
-import { ArrowUpToLine, ChevronDown, ChevronUp, GripVertical, ListStart, MonitorSpeaker, Pause, Play, Plus, SkipForward, Trash2 } from "lucide-react";
+import { ArrowUpToLine, GripVertical, ListStart, Pause, Play, Plus, SkipForward, Trash2 } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { QueueItem, Track, User } from "../../api/types";
 import { useLive } from "../../hooks/live";
@@ -19,7 +19,6 @@ import { useProgress } from "../../hooks/useProgress";
 import { Artwork } from "../../components/Artwork";
 import { ProgressBar } from "../../components/ProgressBar";
 import { TrackRow } from "../../components/TrackRow";
-import { SourceBadge } from "../../components/SourceBadge";
 import { cx } from "../../util";
 import { PageHeader, flash } from "./common";
 import { TrackSearch } from "./TrackSearch";
@@ -106,26 +105,33 @@ export function QueueTab({ me }: { me: User }) {
 
   return (
     <div className="page">
-      <PageHeader title="Queue" sub={`${state?.listeners ?? 0} devices listening`} />
+      <PageHeader title="Queue">
+        {state && (
+          <span className="muted page-header__meta">
+            {state.listeners} {state.listeners === 1 ? "device" : "devices"} listening
+          </span>
+        )}
+      </PageHeader>
 
       <section className="np-card">
         <Artwork url={np?.artwork_url} size={300} className="np-card__art" />
         <div className="np-card__body">
-          <div className="eyebrow">{np ? (paused ? "Paused" : "Now playing") : "Nothing playing"}</div>
           {np ? (
             <>
-              <div className="np-card__title truncate">{np.title}</div>
-              <div className="np-card__artist truncate">
-                {np.artist}
-                {np.album ? ` · ${np.album}` : ""}
+              <div className="np-card__title" title={np.title}>
+                {np.title}
               </div>
-              <div className="np-card__source">
-                <SourceBadge source={np.source} />
+              <div className="np-card__artist truncate">
+                {paused ? "Paused · " : ""}
+                {np.artist}
               </div>
               <ProgressBar position={position} duration={np.duration} />
             </>
           ) : (
-            <div className="muted">Add something below, or set a fallback playlist in Settings.</div>
+            <>
+              <div className="np-card__title">Nothing playing</div>
+              <div className="muted">Add a song, or set a fallback playlist in Settings.</div>
+            </>
           )}
           {(canPause || canSkip) && (
             <>
@@ -156,10 +162,6 @@ export function QueueTab({ me }: { me: User }) {
                   </button>
                 )}
               </div>
-              <p className="np-card__note">
-                <MonitorSpeaker size={14} aria-hidden />
-                {canPause && canSkip ? "Pause and skip apply" : canPause ? "Pause applies" : "Skip applies"} to every device in the room.
-              </p>
             </>
           )}
         </div>
@@ -169,17 +171,15 @@ export function QueueTab({ me }: { me: User }) {
       <div className={cx("queue-grid", !canAdd && "queue-grid--single")}>
         <section>
           <h2 className="section-title">
-            Up next <span className="muted">{upcoming.length}</span>
+            Up next {upcoming.length > 0 && <span className="muted">{upcoming.length}</span>}
           </h2>
           {upcoming.length === 0 ? (
             <div className="empty-state">
               <strong>Queue is empty</strong>
-              {state?.up_next_fallback ? (
+              {state?.up_next_fallback && (
                 <span>
                   Then from the playlist: {state.up_next_fallback.title} — {state.up_next_fallback.artist}
                 </span>
-              ) : (
-                <span>{canAdd ? "Approve requests or add songs to keep the party going." : "Approved requests will show up here."}</span>
               )}
             </div>
           ) : (
@@ -211,8 +211,9 @@ export function QueueTab({ me }: { me: User }) {
                           track={q.track}
                           index={i + 1}
                           className="card-row"
+                          wrap
                           lead={canReorder ? handle : undefined}
-                          meta={<SourceBadge source={q.source} />}
+                          meta={q.source === "request" ? <span className="muted">Guest request</span> : undefined}
                           actions={
                             (canReorder || canRemove) && (
                             <div className="btn-group btn-group--icons">
@@ -220,18 +221,6 @@ export function QueueTab({ me }: { me: User }) {
                               <>
                               <button className="icon-btn" disabled={busy || i === 0} onClick={() => move(q, 0)} aria-label="Move to top" title="Move to top">
                                 <ArrowUpToLine size={18} />
-                              </button>
-                              <button className="icon-btn" disabled={busy || i === 0} onClick={() => move(q, i - 1)} aria-label="Move up" title="Move up">
-                                <ChevronUp size={18} />
-                              </button>
-                              <button
-                                className="icon-btn"
-                                disabled={busy || i === upcoming.length - 1}
-                                onClick={() => move(q, i + 1)}
-                                aria-label="Move down"
-                                title="Move down"
-                              >
-                                <ChevronDown size={18} />
                               </button>
                               </>
                               )}
@@ -258,7 +247,7 @@ export function QueueTab({ me }: { me: User }) {
             </DndContext>
           )}
           {upcoming.length > 0 && state?.up_next_fallback && (
-            <TrackRow track={state.up_next_fallback} dim meta={<span className="muted">then, from the fallback playlist</span>} />
+            <TrackRow track={state.up_next_fallback} dim meta={<span className="muted">then, from the playlist</span>} />
           )}
         </section>
 

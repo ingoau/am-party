@@ -104,10 +104,7 @@ export default function AdminApp() {
             <span />
             <span />
           </span>
-          <div>
-            <div className="admin__party truncate">{state?.party_name || "Encore"}</div>
-            <div className="admin__role">Host panel</div>
-          </div>
+          <div className="admin__party truncate">{state?.party_name || "Encore"}</div>
         </div>
         <nav className="admin__links">
           {allowed.map((s) => (
