@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api } from "../../api/client";
 import type { SongRequest } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { TrackRow } from "../../components/TrackRow";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { CheckCheck, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { StatusBadge } from "../../components/StatusBadge";
 import { cx, timeAgo } from "../../util";
 import { PageHeader, flash } from "./common";
@@ -23,17 +23,23 @@ export function RequestsTab() {
   const [confirmDialog, confirm] = useConfirm();
   const requireApproval = state?.require_approval ?? true;
 
+  // Each load supersedes the previous one: abort its fetches and ignore anything it still delivers,
+  // so a slow older response can't overwrite a newer list.
+  const loadCtl = useRef<AbortController | null>(null);
   const load = useCallback(() => {
+    loadCtl.current?.abort();
+    const ctl = (loadCtl.current = new AbortController());
+    const fresh = () => !ctl.signal.aborted;
     api
-      .adminRequests("pending")
-      .then((r) => setPending(r.requests))
-      .catch(flash.err);
+      .adminRequests("pending", ctl.signal)
+      .then((r) => fresh() && setPending(r.requests))
+      .catch((e) => fresh() && flash.err(e));
     api
-      .adminRequests("all")
-      .then((r) => setHistory(r.requests.filter((x) => x.status !== "pending")))
+      .adminRequests("all", ctl.signal)
+      .then((r) => fresh() && setHistory(r.requests.filter((x) => x.status !== "pending")))
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => () => loadCtl.current?.abort(), []);
 
   useEffect(() => {
     load();
@@ -72,7 +78,6 @@ export function RequestsTab() {
             ? `All ${n} waiting songs jump to the front of the queue, oldest request first.`
             : `All ${n} waiting songs are added to the end of the queue, oldest request first.`,
         confirmLabel: `Approve ${n}`,
-        icon: <CheckCheck size={22} />,
       });
       if (!ok) return;
     }
@@ -99,6 +104,14 @@ export function RequestsTab() {
     if (lastRequire.current !== undefined && cur !== undefined && cur !== lastRequire.current) load();
     lastRequire.current = cur;
   }, [state?.require_approval, load]);
+
+  const onViewKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const next: View = e.key === "Home" ? "pending" : e.key === "End" ? "history" : view === "pending" ? "history" : "pending";
+    setView(next);
+    document.getElementById(`req-tab-${next}`)?.focus();
+  };
 
   const list = view === "pending" ? pending : history;
   const pendingCount = pending?.length ?? 0;
@@ -142,15 +155,32 @@ export function RequestsTab() {
 
       {state && !state.requests_open && <div className="banner banner--warn">Requests are closed. Guests can't send new ones.</div>}
 
-      <div className="segmented" role="tablist">
-        <button role="tab" aria-selected={view === "pending"} className={cx(view === "pending" && "is-active")} onClick={() => setView("pending")}>
+      <div className="segmented" role="tablist" aria-label="Requests" onKeyDown={onViewKey}>
+        <button
+          role="tab"
+          id="req-tab-pending"
+          aria-selected={view === "pending"}
+          aria-controls="req-panel"
+          tabIndex={view === "pending" ? 0 : -1}
+          className={cx(view === "pending" && "is-active")}
+          onClick={() => setView("pending")}
+        >
           Pending{pending && pending.length > 0 && <span className="tab__count">{pending.length}</span>}
         </button>
-        <button role="tab" aria-selected={view === "history"} className={cx(view === "history" && "is-active")} onClick={() => setView("history")}>
+        <button
+          role="tab"
+          id="req-tab-history"
+          aria-selected={view === "history"}
+          aria-controls="req-panel"
+          tabIndex={view === "history" ? 0 : -1}
+          className={cx(view === "history" && "is-active")}
+          onClick={() => setView("history")}
+        >
           History
         </button>
       </div>
 
+      <div role="tabpanel" id="req-panel" aria-labelledby={`req-tab-${view}`}>
       {list === null ? (
         <div className="spinner" />
       ) : list.length === 0 ? (
@@ -181,7 +211,7 @@ export function RequestsTab() {
               wrap
               meta={
                 <span className="muted">
-                  {r.guest_label} · {timeAgo(r.created_at, clockOffset)}
+                  {r.guest_label ? `${r.guest_label} · ` : ""}{timeAgo(r.created_at, clockOffset)}
                   {r.decided_by && r.status !== "pending" ? ` · by ${r.decided_by}` : ""}
                 </span>
               }
@@ -226,6 +256,7 @@ export function RequestsTab() {
           ))}
         </div>
       )}
+      </div>
       {confirmDialog}
     </div>
   );

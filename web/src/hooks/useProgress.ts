@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { NowPlaying } from "../api/types";
 
 /**
@@ -9,24 +9,18 @@ import type { NowPlaying } from "../api/types";
  */
 export function useProgress(np: NowPlaying | null, clockOffset: number, paused: boolean, tickMs = 250): number {
   const [now, setNow] = useState(() => Date.now());
-  const frozen = useRef<{ key: string; at: number } | null>(null);
   const key = np ? `${np.id}:${np.started_at}` : "";
 
   useEffect(() => {
-    if (!np || paused) return;
+    if (!key) return;
+    // Paused: one sample at the moment the pause (or a new track) is observed, then frozen.
     setNow(Date.now());
+    if (paused) return;
     const t = window.setInterval(() => setNow(Date.now()), tickMs);
     return () => window.clearInterval(t);
-  }, [key, paused, tickMs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, paused, tickMs]);
 
   if (!np) return 0;
-  let t = now;
-  if (paused) {
-    if (!frozen.current || frozen.current.key !== key) frozen.current = { key, at: Date.now() };
-    t = frozen.current.at;
-  } else {
-    frozen.current = null;
-  }
-  const raw = t / 1000 + clockOffset - np.started_at;
+  const raw = now / 1000 + clockOffset - np.started_at;
   return Math.max(0, np.duration > 0 ? Math.min(np.duration, raw) : raw);
 }

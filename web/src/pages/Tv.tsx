@@ -1,15 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useLive } from "../hooks/live";
-import { useProgress } from "../hooks/useProgress";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { useIdle } from "../hooks/useIdle";
 import { useSendspin, type SendspinStatus } from "../hooks/useSendspin";
-import { ProgressBar } from "../components/ProgressBar";
+import { LiveProgress } from "../components/ProgressBar";
+import { LazyToaster } from "../components/lazyToast";
 import { QrCode } from "../components/QrCode";
 import { Headphones, Music, Pause, Settings, SquareLetterE, Volume2, VolumeX, WifiOff } from "lucide-react";
-import type { State, Track } from "../api/types";
-import { artworkAt, cx, storage } from "../util";
+import type { QueueItem, Track } from "../api/types";
+import { artworkAt, cx } from "../util";
 import "../styles/tv.css";
 
 /** How long the controls stay up after the last mouse move / touch / key press. */
@@ -31,8 +32,9 @@ export function TvPage() {
   const [params] = useSearchParams();
   const np = state?.now_playing ?? null;
   const paused = state?.paused ?? false;
-  const position = useProgress(np, clockOffset, paused);
-  const accent = useArtworkColor(artworkAt(np?.artwork_url, 100));
+  const bg = artworkAt(np?.artwork_url, 300);
+  // Sample the accent from the backdrop image the page loads anyway (no extra artwork fetch).
+  const accent = useArtworkColor(bg);
   useAccentVars(accent);
   const idle = useIdle(IDLE_MS);
   const sp = useSendspin();
@@ -43,11 +45,6 @@ export function TvPage() {
   const requestUrl = `${base}/request`;
   const host = hostOf(base);
   const requestsOpen = state?.requests_open !== false;
-
-  // The old persistent "Display only" switch is gone (not listening == display only).
-  useEffect(() => {
-    storage.set("encore.displayOnly", "");
-  }, []);
 
   const [intro, setIntro] = useState(true);
   useEffect(() => {
@@ -101,13 +98,10 @@ export function TvPage() {
   }, []);
 
   // The party name lives in the browser title only (the screen itself stays uncluttered).
-  useEffect(() => {
-    const party = state?.party_name || "Encore";
-    document.title = np ? `${np.title} · ${np.artist} · ${party}` : party;
-  }, [np?.title, np?.artist, state?.party_name]); // eslint-disable-line react-hooks/exhaustive-deps
+  const party = state?.party_name || "Encore";
+  useDocumentTitle(np ? `${np.title} · ${np.artist} · ${party}` : party);
 
   const stacked = useMediaQuery(STACKED_MQ);
-  const bg = artworkAt(np?.artwork_url, 300);
   const longTitle = !!np && np.title.length > 18;
 
   return (
@@ -131,7 +125,11 @@ export function TvPage() {
 
       {np ? (
         <main className="tv__stage">
-          <section className="tv__now" aria-live="polite">
+          {/* Announce track changes only, not the ticking progress. */}
+          <p className="sr-only" aria-live="polite" aria-atomic="true">
+            {`${np.title} by ${np.artist}`}
+          </p>
+          <section className="tv__now" aria-label="Now playing">
             <div className="tv__art-wrap">
               <Crossfade
                 url={artworkAt(np.artwork_url, 1000)}
@@ -151,13 +149,13 @@ export function TvPage() {
               {np.explicit && <SquareLetterE className="explicit" role="img" aria-label="Explicit" />}
             </h1>
             <div className="tv__artist">{np.artist}</div>
-            <ProgressBar position={position} duration={np.duration} />
+            <LiveProgress np={np} clockOffset={clockOffset} paused={paused} />
           </section>
 
           <aside className="tv__panel" aria-label="Coming up">
             <RequestCta url={requestUrl} host={host} open={requestsOpen} />
             <div className="tv__divider" aria-hidden />
-            <ComingUp state={state!} stacked={stacked} />
+            <ComingUp upcoming={state!.upcoming} fallback={state!.up_next_fallback} stacked={stacked} />
           </aside>
         </main>
       ) : (
@@ -238,6 +236,7 @@ export function TvPage() {
               setOpen={setSettingsOpen}
               deviceName={sp.deviceName}
               setDeviceName={sp.setDeviceName}
+              renamePending={sp.renamePending}
               volume={sp.volume}
               setVolume={sp.setVolume}
               muted={sp.muted}
@@ -250,6 +249,9 @@ export function TvPage() {
           </div>
         )}
       </footer>
+      <Suspense fallback={null}>
+        <LazyToaster />
+      </Suspense>
     </div>
   );
 }
@@ -282,9 +284,15 @@ function RequestCta({ url, host, open }: { url: string; host: string; open: bool
 }
 
 /** "Coming up": as many whole rows as fit (no half rows), then "+N more". */
-function ComingUp({ state, stacked }: { state: State; stacked: boolean }) {
-  const upcoming = state.upcoming;
-  const fallback = state.up_next_fallback;
+const ComingUp = memo(function ComingUp({
+  upcoming,
+  fallback,
+  stacked,
+}: {
+  upcoming: QueueItem[];
+  fallback: Track | null;
+  stacked: boolean;
+}) {
   const listRef = useRef<HTMLOListElement>(null);
   const probeRef = useRef<HTMLLIElement>(null);
   const moreRef = useRef<HTMLLIElement>(null);
@@ -344,9 +352,9 @@ function ComingUp({ state, stacked }: { state: State; stacked: boolean }) {
       {upcoming.length === 0 && fallback && <p className="cu__hint">No requests yet. Scan the code to pick one.</p>}
     </div>
   );
-}
+});
 
-function Row({ track, dim }: { track: Track; dim?: boolean }) {
+const Row = memo(function Row({ track, dim }: { track: Track; dim?: boolean }) {
   const [failed, setFailed] = useState(false);
   const src = artworkAt(track.artwork_url, 160);
   return (
@@ -364,7 +372,14 @@ function Row({ track, dim }: { track: Track; dim?: boolean }) {
       </span>
     </li>
   );
-}
+},
+// Every state push brings new track objects; only re-render when what's shown changed.
+(a, b) =>
+  a.dim === b.dim &&
+  a.track.id === b.track.id &&
+  a.track.title === b.track.title &&
+  a.track.artist === b.track.artist &&
+  a.track.artwork_url === b.track.artwork_url);
 
 /**
  * Stacks one layer per distinct `url`; a new layer fades in over the old one once it has loaded
@@ -485,6 +500,7 @@ function SettingsPopover({
   setOpen,
   deviceName,
   setDeviceName,
+  renamePending,
   volume,
   setVolume,
   muted,
@@ -496,6 +512,7 @@ function SettingsPopover({
   setOpen: (v: boolean) => void;
   deviceName: string;
   setDeviceName: (v: string) => void;
+  renamePending: boolean;
   volume: number;
   setVolume: (v: number) => void;
   muted: boolean;
@@ -506,6 +523,8 @@ function SettingsPopover({
   const [name, setName] = useState(deviceName);
   const [delay, setDelay] = useState(String(syncDelay));
   const ref = useRef<HTMLDivElement>(null);
+  const gearRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (open) {
       setName(deviceName);
@@ -515,17 +534,14 @@ function SettingsPopover({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Everything applies live. Renaming reconnects the player, so it's committed on blur / Enter /
-  // close or after a longer pause in typing; the delay applies shortly after typing stops.
+  // Volume and delay apply live (the delay shortly after typing stops). The name is committed on
+  // Enter / blur / close only, and takes effect the next time Listen is tapped.
   const commitName = useRef(() => {});
-  commitName.current = () => {
-    if (name.trim() && name.trim() !== deviceName) setDeviceName(name);
-  };
   useEffect(() => {
-    if (!open) return;
-    const t = window.setTimeout(() => commitName.current(), 1200);
-    return () => window.clearTimeout(t);
-  }, [name, open]);
+    commitName.current = () => {
+      if (name.trim() && name.trim() !== deviceName) setDeviceName(name);
+    };
+  });
   useEffect(() => {
     if (!open || delay === "" || Number(delay) === syncDelay) return;
     const t = window.setTimeout(() => setSyncDelay(Number(delay)), 400);
@@ -533,16 +549,34 @@ function SettingsPopover({
   }, [delay, open, syncDelay, setSyncDelay]);
 
   const close = useRef(setOpen);
-  close.current = (v: boolean) => {
-    if (!v) commitName.current();
-    setOpen(v);
-  };
+  useEffect(() => {
+    close.current = (v: boolean) => {
+      if (!v) commitName.current();
+      setOpen(v);
+    };
+  });
+
+  // Dialog focus: move in on open; on close, return to the gear unless the user clicked elsewhere.
+  useEffect(() => {
+    if (!open) return;
+    const dialog = dialogRef.current;
+    dialog?.querySelector<HTMLElement>("input, button, a[href]")?.focus();
+    return () => {
+      const a = document.activeElement;
+      if (!a || a === document.body || dialog?.contains(a) || !a.isConnected) gearRef.current?.focus();
+    };
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent | TouchEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) close.current(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close.current(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      close.current(false);
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("touchstart", onDown);
     document.addEventListener("keydown", onKey);
@@ -556,9 +590,11 @@ function SettingsPopover({
   return (
     <div className="popover-anchor" ref={ref}>
       <button
+        ref={gearRef}
         type="button"
         className={cx("tv-btn", open && "is-on")}
         aria-label="Device settings"
+        aria-haspopup="dialog"
         title="Device settings"
         aria-expanded={open}
         onClick={() => close.current(!open)}
@@ -566,7 +602,7 @@ function SettingsPopover({
         <Settings size={22} />
       </button>
       {open && (
-        <div className="popover" role="dialog" aria-label="Device settings">
+        <div className="popover" role="dialog" aria-label="Device settings" ref={dialogRef}>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -600,6 +636,7 @@ function SettingsPopover({
                 maxLength={60}
                 enterKeyHint="done"
               />
+              {renamePending && <span className="field__hint">The new name shows up next time you tap Listen.</span>}
             </label>
             <label className="field">
               <span className="field__label">Speaker delay (ms)</span>

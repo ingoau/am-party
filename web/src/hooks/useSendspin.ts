@@ -1,11 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SendspinPlayer } from "@sendspin/sendspin-js";
+import type { SendspinPlayer } from "@sendspin/sendspin-js";
+import { lazyToast as toast } from "../components/lazyToast";
 import { storage } from "../util";
 
 const K_NAME = "encore.deviceName";
 const K_VOL = "encore.volume";
 const K_MUTED = "encore.muted";
 const K_DELAY = "encore.syncDelayMs";
+
+type SendspinModule = typeof import("@sendspin/sendspin-js");
+let sendspinMod: SendspinModule | null = null;
+let sendspinLoad: Promise<SendspinModule> | null = null;
+
+/**
+ * Fetch the sendspin-js chunk (kept out of the TV page's initial bundle). Called when the page is
+ * idle and on the first pointer / key interaction, so it's normally loaded before Listen is tapped:
+ * the player has to be built and unlocked synchronously inside that tap for iOS / Chrome to let
+ * its AudioContext play.
+ */
+export function preloadSendspin(): Promise<SendspinModule> {
+  sendspinLoad ??= import("@sendspin/sendspin-js").then(
+    (m) => (sendspinMod = m),
+    (e) => {
+      sendspinLoad = null; // allow a retry
+      throw e;
+    },
+  );
+  return sendspinLoad;
+}
+
+/** If the AudioContext can't be unlocked (no gesture left after a slow chunk load), give up after this. */
+const UNLOCK_TIMEOUT_MS = 3000;
 
 export function defaultDeviceName(): string {
   const ua = navigator.userAgent;
@@ -52,6 +77,11 @@ export type SendspinStatus = {
   error: string | null;
 };
 
+const OFF: SendspinStatus = { listening: false, connected: false, sync: "off", syncErrorMs: null, outputLatencyMs: null, codec: null, error: null };
+
+const sameStatus = (a: SendspinStatus, b: SendspinStatus) =>
+  (Object.keys(a) as (keyof SendspinStatus)[]).every((k) => a[k] === b[k]);
+
 /**
  * Wraps a SendspinPlayer. A fresh player is created per listening session (disconnect closes
  * its AudioContext). Client identity (clientId) is persisted by sendspin-js in localStorage,
@@ -59,35 +89,52 @@ export type SendspinStatus = {
  */
 export function useSendspin() {
   const playerRef = useRef<SendspinPlayer | null>(null);
+  /** Bumped by every start/stop so async work from an older session can tell it's stale. */
+  const sessionRef = useRef(0);
   const [deviceName, setDeviceNameState] = useState(() => storage.get(K_NAME) || defaultDeviceName());
+  /** Name the current listening session announced (clientName is fixed per connection). */
+  const [activeName, setActiveName] = useState<string | null>(null);
   const [volume, setVolumeState] = useState(() => {
     const v = Number(storage.get(K_VOL));
     return storage.get(K_VOL) !== null && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 80;
   });
   const [muted, setMutedState] = useState(() => storage.get(K_MUTED) === "1");
-  const [status, setStatus] = useState<SendspinStatus>({
-    listening: false,
-    connected: false,
-    sync: "off",
-    syncErrorMs: null,
-    outputLatencyMs: null,
-    codec: null,
-    error: null,
-  });
+  const [status, setStatus] = useState<SendspinStatus>(OFF);
 
   const [syncDelay, setSyncDelayState] = useState(() => {
     const v = Number(storage.get(K_DELAY));
     return Number.isFinite(v) ? Math.max(0, Math.min(5000, Math.round(v))) : 0;
   });
   const syncDelayRef = useRef(syncDelay);
-  syncDelayRef.current = syncDelay;
-
   const volRef = useRef({ volume, muted });
-  volRef.current = { volume, muted };
+  const nameRef = useRef(deviceName);
+  useEffect(() => {
+    syncDelayRef.current = syncDelay;
+    volRef.current = { volume, muted };
+    nameRef.current = deviceName;
+  });
 
-  const stop = useCallback(() => {
+  // Fetch the player code in the background: when idle, and on the first interaction.
+  useEffect(() => {
+    if (sendspinMod) return;
+    const load = () => void preloadSendspin().catch(() => {});
+    const ric = window.requestIdleCallback?.(load, { timeout: 4000 });
+    const t = ric === undefined ? window.setTimeout(load, 1500) : undefined;
+    const opts = { capture: true, once: true, passive: true } as const;
+    window.addEventListener("pointerdown", load, opts);
+    window.addEventListener("keydown", load, opts);
+    return () => {
+      if (ric !== undefined) window.cancelIdleCallback?.(ric);
+      window.clearTimeout(t);
+      window.removeEventListener("pointerdown", load, opts);
+      window.removeEventListener("keydown", load, opts);
+    };
+  }, []);
+
+  const teardown = () => {
     const p = playerRef.current;
     playerRef.current = null;
+    sessionRef.current++;
     if (p) {
       try {
         p.disconnect("user_request");
@@ -95,18 +142,40 @@ export function useSendspin() {
         /* ignore */
       }
     }
-    setStatus({ listening: false, connected: false, sync: "off", syncErrorMs: null, outputLatencyMs: null, codec: null, error: null });
+  };
+
+  const stop = useCallback(() => {
+    teardown();
+    setActiveName(null);
+    setStatus(OFF);
   }, []);
 
-  /** Must be called synchronously from a user gesture (click / keydown). */
-  const start = useCallback(
-    (nameOverride?: string) => {
-      if (playerRef.current) return;
+  /** A failed session: drop the player and show why (status + toast). */
+  const fail = useCallback((message: string) => {
+    teardown();
+    setActiveName(null);
+    setStatus({ ...OFF, sync: "error", error: message });
+    toast.error(message, { duration: 6000 });
+  }, []);
+
+  /**
+   * Must be called synchronously from a user gesture (click / keydown): the player's AudioContext
+   * is created and resumed inside it.
+   */
+  const start = useCallback(() => {
+    if (playerRef.current) return;
+    const session = ++sessionRef.current;
+    const name = nameRef.current;
+    setActiveName(name);
+    setStatus({ ...OFF, listening: true, sync: "connecting" });
+
+    const launch = (mod: SendspinModule, inGesture: boolean) => {
+      if (sessionRef.current !== session) return;
       let player: SendspinPlayer;
       try {
-        player = new SendspinPlayer({
+        player = new mod.SendspinPlayer({
           baseUrl: location.origin,
-          clientName: nameOverride ?? deviceName,
+          clientName: name,
           productName: "Encore",
           // codecs left at default: the SDK filters out what this browser can't decode
           // (e.g. no opus without WebCodecs / a secure context).
@@ -120,37 +189,54 @@ export function useSendspin() {
           },
           reconnect: {
             onReconnecting: () => {
-              if (playerRef.current === player) setStatus((st) => ({ ...st, connected: false, sync: "connecting" }));
+              if (playerRef.current === player) setStatus((st) => (st.connected || st.sync !== "connecting" ? { ...st, connected: false, sync: "connecting" } : st));
             },
           },
         });
       } catch (e) {
-        setStatus((st) => ({ ...st, error: (e as Error).message || "Audio is not supported in this browser" }));
+        fail((e as Error)?.message || "Audio is not supported in this browser");
         return;
       }
       playerRef.current = player;
-      setStatus({ listening: true, connected: false, sync: "connecting", syncErrorMs: null, outputLatencyMs: null, codec: null, error: null });
-      // unlock() must be the first awaited call inside the gesture handler.
+      // unlock() creates + resumes the AudioContext synchronously, so it must run in the gesture.
+      // Outside one (the chunk was still loading) it may never resolve: time out and ask for a re-tap.
       const unlock = player.unlock();
+      const unlocked = inGesture
+        ? unlock
+        : Promise.race([
+            unlock,
+            new Promise<never>((_, rej) => window.setTimeout(() => rej(new Error("Tap Listen again to start audio")), UNLOCK_TIMEOUT_MS)),
+          ]);
       void (async () => {
         try {
-          await unlock;
+          await unlocked;
+          if (playerRef.current !== player) return;
           player.setVolume(volRef.current.volume);
           player.setMuted(volRef.current.muted);
           await player.connect();
+          if (playerRef.current !== player) return;
           // Re-apply in case connect reset local state.
           player.setVolume(volRef.current.volume);
           player.setMuted(volRef.current.muted);
         } catch (e) {
           if (playerRef.current !== player) return;
-          setStatus((st) => ({ ...st, sync: "error", error: (e as Error)?.message || "Couldn't connect to the audio stream" }));
+          fail((e as Error)?.message || "Couldn't connect to the audio stream");
         }
       })();
-    },
-    [deviceName],
-  );
+    };
 
-  // Poll sync status while listening.
+    if (sendspinMod) {
+      launch(sendspinMod, true);
+    } else {
+      // Rare: tapped before the background preload finished.
+      preloadSendspin().then(
+        (m) => launch(m, false),
+        () => sessionRef.current === session && fail("Couldn't load the audio player. Check your connection."),
+      );
+    }
+  }, [fail]);
+
+  // Poll sync status while listening; only re-render when something visible changed.
   useEffect(() => {
     if (!status.listening) return;
     const t = window.setInterval(() => {
@@ -165,15 +251,18 @@ export function useSendspin() {
       else if (p.playerState === "error") sync = "error";
       else if (!ts.synced) sync = "syncing";
       else sync = "synced";
-      setStatus((st) => ({
-        ...st,
-        connected,
-        sync,
-        syncErrorMs: p.isPlaying && Number.isFinite(si.syncErrorMs) ? si.syncErrorMs : null,
-        outputLatencyMs: Number.isFinite(si.outputLatencyMs) ? si.outputLatencyMs : null,
-        codec: fmt ? `${fmt.codec}${fmt.sample_rate ? ` · ${Math.round(fmt.sample_rate / 100) / 10} kHz` : ""}` : null,
-        error: sync === "error" ? st.error : connected ? null : st.error,
-      }));
+      setStatus((st) => {
+        const next: SendspinStatus = {
+          ...st,
+          connected,
+          sync,
+          syncErrorMs: p.isPlaying && Number.isFinite(si.syncErrorMs) ? Math.round(si.syncErrorMs) : null,
+          outputLatencyMs: Number.isFinite(si.outputLatencyMs) ? Math.round(si.outputLatencyMs) : null,
+          codec: fmt ? `${fmt.codec}${fmt.sample_rate ? ` · ${Math.round(fmt.sample_rate / 100) / 10} kHz` : ""}` : null,
+          error: sync === "error" ? st.error : connected ? null : st.error,
+        };
+        return sameStatus(st, next) ? st : next;
+      });
     }, 1000);
     return () => window.clearInterval(t);
   }, [status.listening]);
@@ -198,19 +287,17 @@ export function useSendspin() {
     playerRef.current?.setMuted(m);
   }, []);
 
-  const setDeviceName = useCallback(
-    (name: string) => {
-      const n = name.trim() || defaultDeviceName();
-      storage.set(K_NAME, n);
-      setDeviceNameState(n);
-      // clientName is fixed at construction: reconnect with the new name if listening.
-      if (playerRef.current) {
-        stop();
-        start(n);
-      }
-    },
-    [start, stop],
-  );
+  /**
+   * clientName is fixed when the player connects and sendspin-js has no way to change it live.
+   * Reconnecting here would happen outside a user gesture (leaving the new AudioContext locked
+   * on iOS / Chrome), so the new name is stored and used from the next time Listen is tapped.
+   */
+  const setDeviceName = useCallback((name: string) => {
+    const n = name.trim() || defaultDeviceName();
+    storage.set(K_NAME, n);
+    nameRef.current = n;
+    setDeviceNameState(n);
+  }, []);
 
   /** Extra per-device delay compensation (ms, 0-5000) for external speakers / Bluetooth. */
   const setSyncDelay = useCallback((ms: number) => {
@@ -224,5 +311,8 @@ export function useSendspin() {
     }
   }, []);
 
-  return { status, start, stop, volume, setVolume, muted, setMuted, deviceName, setDeviceName, syncDelay, setSyncDelay };
+  /** True while listening under an older name (the rename applies on the next Listen). */
+  const renamePending = status.listening && activeName !== null && activeName !== deviceName;
+
+  return { status, start, stop, volume, setVolume, muted, setMuted, deviceName, setDeviceName, renamePending, syncDelay, setSyncDelay };
 }

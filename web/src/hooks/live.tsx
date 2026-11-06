@@ -21,6 +21,9 @@ type LiveCtx = {
 const Ctx = createContext<LiveCtx | null>(null);
 
 const POLL_MS = 5000;
+const PING_MS = 25_000;
+/** A clock-offset sample older than this is replaced by the next one, whatever its round trip. */
+const OFFSET_MAX_AGE_MS = 5 * 60_000;
 
 /**
  * Single shared connection to /api/ws for the whole app.
@@ -41,20 +44,40 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     let reconnectTimer: number | undefined;
     let pollTimer: number | undefined;
     let pingTimer: number | undefined;
-    // Best (lowest-uncertainty) clock offset estimate seen recently.
-    let bestOffset: { offset: number; err: number; at: number } | null = null;
+    // Best clock offset sample: the one with the lowest round trip (least uncertainty). It is
+    // re-estimated once it gets old, so slow drift between the clocks is still followed.
+    let best: { offset: number; rtt: number; at: number } | null = null;
+    // server_time of the last state applied; anything not newer is a stale response.
+    let lastServerTime = -Infinity;
+    let pingSentAt: number | null = null;
+    let pingSeqTimers: number[] = [];
 
-    const applyState = (s: State, localT0: number, localT1: number) => {
-      const err = (localT1 - localT0) / 2000;
-      const offset = s.server_time - (localT0 + localT1) / 2000;
+    /** One round-trip sample: request sent at tSend (ms), answer stamped serverTime (s), received after rtt ms. */
+    const sampleClock = (serverTime: number, tSend: number, rtt: number) => {
+      const offset = serverTime - (tSend + rtt / 2) / 1000;
       const now = Date.now();
-      // Prefer low-latency samples, but let old estimates expire after a minute.
-      if (!bestOffset || err <= bestOffset.err + 0.005 || now - bestOffset.at > 60_000) {
-        bestOffset = { offset, err, at: now };
+      if (!best || rtt <= best.rtt || now - best.at > OFFSET_MAX_AGE_MS) {
+        best = { offset, rtt, at: now };
         setClockOffset(offset);
       }
+    };
+
+    const applyState = (s: State) => {
+      // Ignore out-of-order responses (a slow poll landing after a newer socket push). A big
+      // backwards jump means the server restarted / its clock was reset, so start over.
+      if (s.server_time <= lastServerTime && lastServerTime - s.server_time < 30) return;
+      lastServerTime = s.server_time;
+      // Pushes carry no round-trip info: use one only until a real sample exists.
+      if (!best) setClockOffset(s.server_time - Date.now() / 1000);
       setState(s);
-      setReceivedAt(now);
+      setReceivedAt(Date.now());
+    };
+
+    const sendPing = () => {
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      if (pingSentAt !== null && Date.now() - pingSentAt < 10_000) return; // one ping in flight at a time
+      pingSentAt = Date.now();
+      ws.send(JSON.stringify({ type: "ping" }));
     };
 
     const emit = (ev: LiveEvent) => listeners.current.get(ev)?.forEach((fn) => fn());
@@ -64,7 +87,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       try {
         const s = await api.state();
         if (!disposed) {
-          applyState(s, t0, Date.now());
+          sampleClock(s.server_time, t0, Date.now() - t0);
+          applyState(s);
           setStatus((st) => (st === "live" ? st : "polling"));
         }
       } catch {
@@ -97,9 +121,11 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         attempt = 0;
         setStatus("live");
         stopPolling();
-        pingTimer = window.setInterval(() => {
-          if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-        }, 25_000);
+        pingSentAt = null;
+        // A few quick pings to get a good clock offset early, then one per interval.
+        sendPing();
+        pingSeqTimers = [1000, 2500, 5000].map((d) => window.setTimeout(sendPing, d));
+        pingTimer = window.setInterval(sendPing, PING_MS);
       };
       ws.onmessage = (ev) => {
         const t = Date.now();
@@ -109,11 +135,17 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         } catch {
           return;
         }
-        if (msg.type === "state") applyState(msg.data, t, t);
+        if (msg.type === "state") applyState(msg.data);
+        else if (msg.type === "pong") {
+          if (pingSentAt !== null && typeof msg.server_time === "number") sampleClock(msg.server_time, pingSentAt, t - pingSentAt);
+          pingSentAt = null;
+        }
         else if (msg.type === "requests_changed" || msg.type === "users_changed") emit(msg.type);
       };
       ws.onclose = () => {
         if (pingTimer !== undefined) window.clearInterval(pingTimer);
+        pingSeqTimers.forEach((x) => window.clearTimeout(x));
+        pingSentAt = null;
         ws = null;
         if (disposed) return;
         setStatus(opened ? "polling" : (s) => (s === "offline" ? s : "polling"));
@@ -151,6 +183,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", onVisible);
       window.clearTimeout(reconnectTimer);
       if (pingTimer !== undefined) window.clearInterval(pingTimer);
+      pingSeqTimers.forEach((x) => window.clearTimeout(x));
       stopPolling();
       ws?.close();
     };

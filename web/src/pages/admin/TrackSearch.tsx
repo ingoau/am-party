@@ -17,6 +17,7 @@ export function TrackSearch({ actions, placeholder }: { actions: (t: Track) => R
     if (q.length < 2) {
       setResults(null);
       setError(null);
+      setLoading(false);
       return;
     }
     const ctrl = new AbortController();
@@ -44,6 +45,7 @@ export function TrackSearch({ actions, placeholder }: { actions: (t: Track) => R
           placeholder={placeholder ?? "Search Apple Music"}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          aria-label={placeholder ?? "Search Apple Music"}
           autoComplete="off"
         />
         {query && (

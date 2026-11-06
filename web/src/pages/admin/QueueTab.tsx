@@ -15,9 +15,8 @@ import { ArrowUpToLine, GripVertical, ListStart, Pause, Play, Plus, SkipForward,
 import { api, ApiError } from "../../api/client";
 import type { QueueItem, Track, User } from "../../api/types";
 import { useLive } from "../../hooks/live";
-import { useProgress } from "../../hooks/useProgress";
 import { Artwork } from "../../components/Artwork";
-import { ProgressBar } from "../../components/ProgressBar";
+import { LiveProgress } from "../../components/ProgressBar";
 import { TrackRow } from "../../components/TrackRow";
 import { cx } from "../../util";
 import { PageHeader, flash } from "./common";
@@ -35,15 +34,22 @@ export function QueueTab({ me }: { me: User }) {
   const [confirmDialog, confirm] = useConfirm();
   const np = state?.now_playing ?? null;
   const paused = state?.paused ?? false;
-  const position = useProgress(np, clockOffset, paused, 500);
   const [busy, setBusy] = useState(false);
   // Local optimistic ordering while a move is in flight.
   const [optimistic, setOptimistic] = useState<QueueItem[] | null>(null);
   const upcoming = optimistic ?? state?.upcoming ?? [];
 
-  // Drop the optimistic order as soon as the server's view of the queue arrives (or after a grace period),
-  // so a successful drag doesn't visibly snap back while the refresh is in flight.
-  useEffect(() => setOptimistic(null), [state?.upcoming]);
+  // Drop the optimistic order once the server's queue matches it (or the queue changed some other
+  // way, or after a grace period / on error). A push that still has the pre-move order is ignored,
+  // so a drag doesn't flicker back while the move is in flight.
+  const serverUpcoming = state?.upcoming;
+  useEffect(() => {
+    if (!optimistic || !serverUpcoming) return;
+    const mine = optimistic.map((u) => u.id).join(",");
+    const theirs = serverUpcoming.map((u) => u.id).join(",");
+    const sorted = (l: QueueItem[]) => l.map((u) => u.id).sort((a, b) => a - b).join(",");
+    if (mine === theirs || sorted(optimistic) !== sorted(serverUpcoming)) setOptimistic(null);
+  }, [serverUpcoming, optimistic]);
   useEffect(() => {
     if (!optimistic) return;
     const t = window.setTimeout(() => setOptimistic(null), 4000);
@@ -95,7 +101,6 @@ export function QueueTab({ me }: { me: User }) {
       title: `Skip “${np.title}”?`,
       description: "This skips the song for everyone listening on all devices.",
       confirmLabel: "Skip for everyone",
-      icon: <SkipForward size={22} fill="currentColor" />,
     });
     if (ok) void run(() => api.skip(), `Skipped “${np.title}”`);
   };
@@ -125,7 +130,7 @@ export function QueueTab({ me }: { me: User }) {
                 {paused ? "Paused · " : ""}
                 {np.artist}
               </div>
-              <ProgressBar position={position} duration={np.duration} />
+              <LiveProgress np={np} clockOffset={clockOffset} paused={paused} tickMs={500} />
             </>
           ) : (
             <>

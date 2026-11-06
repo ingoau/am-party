@@ -7,8 +7,6 @@ export type ConfirmOptions = {
   description: ReactNode;
   confirmLabel: string;
   cancelLabel?: string;
-  /** Accepted for compatibility; dialogs no longer show an icon. */
-  icon?: ReactNode;
   /** Red confirm button for destructive actions. */
   danger?: boolean;
 };

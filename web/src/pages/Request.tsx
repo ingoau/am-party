@@ -1,12 +1,12 @@
-import { Suspense, useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, ApiError } from "../api/client";
 import type { SongRequest, Track } from "../api/types";
 import { useLive } from "../hooks/live";
 import { useDebounced } from "../hooks/useDebounced";
-import { useProgress } from "../hooks/useProgress";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { Artwork } from "../components/Artwork";
-import { ProgressBar } from "../components/ProgressBar";
+import { LiveProgress } from "../components/ProgressBar";
 import { TrackRow } from "../components/TrackRow";
 import { Search, X } from "lucide-react";
 import { LazyToaster, lazyToast as toast } from "../components/lazyToast";
@@ -38,8 +38,7 @@ function friendlyError(e: unknown): string {
 export function RequestPage() {
   const { state, clockOffset } = useLive();
   const np = state?.now_playing ?? null;
-  const position = useProgress(np, clockOffset, state?.paused ?? false, 1000);
-  useAccentVars(useArtworkColor(artworkAt(np?.artwork_url, 100)));
+  useAccentVars(useArtworkColor(artworkAt(np?.artwork_url, 200))); // same size as the now-playing <Artwork>
 
   const [tab, setTab] = useState<Tab>("search");
   const [query, setQuery] = useState("");
@@ -51,9 +50,7 @@ export function RequestPage() {
   const [mine, setMine] = useState<SongRequest[]>([]);
   const [pendingTrack, setPendingTrack] = useState<string | null>(null);
 
-  useEffect(() => {
-    document.title = `Request a song · ${state?.party_name || "Encore"}`;
-  }, [state?.party_name]);
+  useDocumentTitle(`Request a song · ${state?.party_name || "Encore"}`);
 
   // Debounced search with abort of stale requests.
   useEffect(() => {
@@ -80,10 +77,16 @@ export function RequestPage() {
     return () => ctrl.abort();
   }, [q]);
 
+  // Only the newest /mine response applies; local changes (a new request, a withdraw) also bump
+  // the sequence so a response fetched before them can't roll them back.
+  const mineSeq = useRef(0);
   const loadMine = useCallback(() => {
+    const seq = ++mineSeq.current;
     api
       .myRequests()
-      .then((r) => setMine(r.requests))
+      .then((r) => {
+        if (seq === mineSeq.current) setMine(r.requests);
+      })
       .catch(() => {});
   }, []);
 
@@ -101,9 +104,14 @@ export function RequestPage() {
 
   const requested = useMemo(() => {
     const m = new Map<string, SongRequest["status"]>();
-    for (const r of mine) if (r.status === "pending" || r.status === "approved") m.set(r.track.id, r.status);
+    for (const r of mine) {
+      // An approved request only blocks a re-request while it's still queued or playing; once it
+      // has played, guests can ask for the song again.
+      const active = r.status === "pending" || (r.status === "approved" && (r.queue_position != null || np?.id === r.track.id));
+      if (active) m.set(r.track.id, r.status);
+    }
     return m;
-  }, [mine]);
+  }, [mine, np?.id]);
   const myIds = useMemo(() => new Set(mine.map((r) => r.id)), [mine]);
   const shownMine = useMemo(() => mine.filter((r) => r.status !== "withdrawn"), [mine]);
   const queuedIds = useMemo(() => {
@@ -117,6 +125,7 @@ export function RequestPage() {
     setPendingTrack(t.id);
     try {
       const { request } = await api.createRequest(t.id);
+      mineSeq.current++;
       setMine((m) => [request, ...m.filter((x) => x.id !== request.id)]);
       // Trust the server's answer first: with approval off it comes back already approved.
       const queuedNow = request.status === "approved" || state?.require_approval === false;
@@ -133,6 +142,7 @@ export function RequestPage() {
   };
 
   const withdraw = async (r: SongRequest) => {
+    mineSeq.current++;
     setMine((m) => m.map((x) => (x.id === r.id ? { ...x, status: "withdrawn" } : x)));
     try {
       await api.withdrawRequest(r.id);
@@ -183,7 +193,7 @@ export function RequestPage() {
               {state?.paused ? "Paused · " : ""}
               {np.artist}
             </div>
-            <ProgressBar position={position} duration={np.duration} compact />
+            <LiveProgress np={np} clockOffset={clockOffset} paused={state?.paused ?? false} tickMs={1000} compact />
           </div>
         </div>
       )}
@@ -208,6 +218,7 @@ export function RequestPage() {
               inputMode="search"
               enterKeyHint="search"
               placeholder="Search songs or artists"
+              aria-label="Search songs or artists"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               disabled={closed}

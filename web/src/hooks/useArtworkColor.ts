@@ -52,7 +52,10 @@ async function sample(url: string): Promise<Rgb | null> {
   return hslToRgb(h, s < 0.12 ? s : Math.max(0.45, Math.min(0.9, s)), Math.max(0.55, Math.min(0.72, l)));
 }
 
-/** Dominant accent colour of an artwork URL, or null if unavailable (CORS taint, error). */
+/**
+ * Dominant accent colour of an artwork URL, or null if unavailable (CORS taint, error).
+ * Pass a size the page already displays so the browser can reuse that download.
+ */
 export function useArtworkColor(url: string | null | undefined): Rgb | null {
   const [color, setColor] = useState<Rgb | null>(() => (url ? cache.get(url) ?? null : null));
   useEffect(() => {
@@ -82,10 +85,9 @@ export function useArtworkColor(url: string | null | undefined): Rgb | null {
 export function useAccentVars(color: Rgb | null) {
   useEffect(() => {
     const root = document.documentElement;
-    if (color) {
-      root.style.setProperty("--accent-rgb", color.join(", "));
-    } else {
-      root.style.removeProperty("--accent-rgb");
-    }
+    if (!color) return;
+    root.style.setProperty("--accent-rgb", color.join(", "));
+    // Also runs on unmount, so the accent doesn't leak into the next page.
+    return () => void root.style.removeProperty("--accent-rgb");
   }, [color]);
 }

@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { ListChecks } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { useLive } from "../../hooks/live";
 import { useConfirm } from "./ConfirmDialog";
@@ -23,6 +22,9 @@ export function RequireApprovalSwitch({ className }: { className?: string }) {
     if (pendingValue !== null && live === pendingValue) setPendingValue(null);
   }, [live, pendingValue]);
 
+  const settleTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
+
   const checked = pendingValue ?? live ?? true;
   const busy = pendingValue !== null;
 
@@ -40,7 +42,6 @@ export function RequireApprovalSwitch({ className }: { className?: string }) {
           "Guest requests will go straight into the queue." +
           (waiting > 0 ? ` The ${plural(waiting, "waiting request")} will be approved now.` : ""),
         confirmLabel: waiting > 0 ? `Turn off & approve ${waiting}` : "Turn off approval",
-        icon: <ListChecks size={22} />,
       });
       if (!ok) return;
     }
@@ -50,7 +51,8 @@ export function RequireApprovalSwitch({ className }: { className?: string }) {
       if (enabled) flash.ok("Approval is on. New requests wait for you.");
       else flash.ok(r.approved > 0 ? `Approval is off. Approved ${plural(r.approved, "waiting request")}.` : "Approval is off. Requests go straight to the queue.");
       // If the socket is down, don't leave the switch stuck in its optimistic state.
-      window.setTimeout(() => setPendingValue(null), 4000);
+      window.clearTimeout(settleTimer.current);
+      settleTimer.current = window.setTimeout(() => setPendingValue(null), 4000);
     } catch (e) {
       setPendingValue(null);
       flash.err(e);

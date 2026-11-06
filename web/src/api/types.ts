@@ -37,7 +37,8 @@ export type State = {
   /** false = guest requests skip approval and go straight into the queue. */
   require_approval: boolean;
   listeners: number;
-  public_url?: string; // configured public base URL, used for the QR code
+  /** Configured public base URL, used for the QR code ("" when unset). */
+  public_url: string;
 };
 
 export type RequestStatus = "pending" | "approved" | "rejected" | "withdrawn";
@@ -54,8 +55,10 @@ export type SongRequest = {
   can_withdraw?: boolean;
   created_at: number;
   decided_at: number | null;
-  decided_by: string | null;
-  guest_label: string;
+  /** Admin views only (null = auto-approved). */
+  decided_by?: string | null;
+  /** Admin views only: anonymised label such as "Guest 7F3A". */
+  guest_label?: string;
 };
 
 export type Permission =
@@ -140,6 +143,7 @@ export type Playlist = { id: string; name: string; artwork_url: string | null };
 export type AdminStatus = {
   apple_music: { configured: boolean; ok: boolean; error: string | null };
   smart_fades: { available: boolean; error: string | null };
+  fallback: { tracks: number; error: string | null };
   listeners: number;
   engine: Record<string, unknown>;
 };
@@ -162,4 +166,4 @@ export type WsMessage =
   | { type: "state"; data: State }
   | { type: "requests_changed" }
   | { type: "users_changed" }
-  | { type: "pong" };
+  | { type: "pong"; server_time: number };

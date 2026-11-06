@@ -3,6 +3,7 @@ import { Navigate, NavLink, Route, Routes } from "react-router";
 import { api, ApiError } from "../../api/client";
 import type { Me, User } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
+import { useDocumentTitle } from "../../hooks/useDocumentTitle";
 import { Inbox, ListMusic, LogOut, Settings, Tv, Users } from "lucide-react";
 import { Toaster } from "../../components/Toaster";
 import { RequestsTab } from "./RequestsTab";
@@ -39,9 +40,7 @@ export default function AdminApp() {
   // Sent to every signed-in user whenever anyone's permissions change — ours may have too.
   useLiveEvent("users_changed", load);
 
-  useEffect(() => {
-    document.title = `Host · ${state?.party_name || "Encore"}`;
-  }, [state?.party_name]);
+  useDocumentTitle(`Host · ${state?.party_name || "Encore"}`);
 
   if (error && !me) {
     return (

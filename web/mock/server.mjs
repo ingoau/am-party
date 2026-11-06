@@ -270,7 +270,9 @@ async function readBody(req) {
 }
 const strip = (r, admin) => {
   const { guest, queue_item_id, ...rest } = r;
-  return admin ? rest : { ...rest, decided_by: null, guest_label: "" };
+  if (admin) return rest;
+  const { decided_by, guest_label, ...pub } = rest; // admin views only, like the backend
+  return pub;
 };
 function search(q) {
   q = q.toLowerCase();
@@ -399,7 +401,7 @@ const server = http.createServer(async (req, res) => {
       r.decided_by = user.name;
     }
     requestsChanged();
-    return json(res, 200, {});
+    return json(res, 200, { request: strip(r, true) });
   }
 
   // Queue managers
@@ -411,7 +413,7 @@ const server = http.createServer(async (req, res) => {
     const item = { id: nextId++, track: t, source: "admin", request_id: null };
     position === "next" ? upcoming.unshift(item) : upcoming.push(item);
     broadcastState();
-    return json(res, 201, { item });
+    return json(res, 201, { ok: true });
   }
   if ((m = p.match(/^\/api\/admin\/queue\/(\d+)$/)) && req.method === "DELETE") {
     if (!need("queue_remove")) return;
@@ -511,6 +513,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       apple_music: { configured: true, ok: true, error: null },
       smart_fades: { available: false, error: "analysis model not installed" },
+      fallback: { tracks: TRACKS.length, error: null },
       listeners: 4,
       // Same keys as backend/encore/player/engine.py status().
       engine: {
@@ -564,8 +567,18 @@ server.on("upgrade", (req, sock) => {
   wsSend(sock, { type: "state", data: state() });
   sock.on("data", (buf) => {
     const op = buf[0] & 0x0f;
-    if (op === 0x8) sock.end(); // close
-    // pings ({"type":"ping"}) are ignored; we don't need to parse client frames.
+    if (op === 0x8) return sock.end(); // close
+    // Text frame (client frames are masked). Only small single-frame messages are expected.
+    if (op !== 0x1) return;
+    let len = buf[1] & 0x7f;
+    let off = 2;
+    if (len === 126) { len = buf.readUInt16BE(2); off = 4; }
+    else if (len === 127) return;
+    const mask = buf.subarray(off, off + 4);
+    const payload = Buffer.from(buf.subarray(off + 4, off + 4 + len).map((b, i) => b ^ mask[i % 4]));
+    let msg;
+    try { msg = JSON.parse(payload.toString("utf8")); } catch { return; }
+    if (msg?.type === "ping") wsSend(sock, { type: "pong", server_time: Date.now() / 1000 });
   });
   sock.on("close", () => sockets.delete(sock));
   sock.on("error", () => sockets.delete(sock));

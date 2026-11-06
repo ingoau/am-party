@@ -6,6 +6,7 @@ import { Check } from "lucide-react";
 import { cx, fmtDate } from "../../util";
 import { PageHeader, flash } from "./common";
 import { RequireApprovalSwitch } from "./RequireApprovalSwitch";
+import { useLive } from "../../hooks/live";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 type SetSetting = <K extends keyof Settings>(k: K, v: Settings[K], debounceMs?: number) => void;
@@ -115,6 +116,24 @@ export function SettingsTab() {
     const t = window.setTimeout(() => setSaveState("idle"), 2500);
     return () => window.clearTimeout(t);
   }, [saveState]);
+
+  // Pick up toggles flipped elsewhere (another admin, the Requests tab) from the live state, unless
+  // this page has its own unsaved change to that field.
+  const { state: live } = useLive();
+  const liveOpen = live?.requests_open;
+  const liveApproval = live?.require_approval;
+  useEffect(() => {
+    const draft = draftRef.current;
+    const saved = savedRef.current;
+    if (!draft || !saved) return;
+    const sync: Partial<Settings> = {};
+    if (liveOpen !== undefined && liveOpen !== saved.requests_open && draft.requests_open === saved.requests_open && !inflight.current) sync.requests_open = liveOpen;
+    if (liveApproval !== undefined && liveApproval !== saved.require_approval) sync.require_approval = liveApproval;
+    if (Object.keys(sync).length === 0) return;
+    savedRef.current = { ...saved, ...sync };
+    draftRef.current = { ...draft, ...sync };
+    setDraft(draftRef.current);
+  }, [liveOpen, liveApproval]);
 
   const smartUnavailable = !!status && !status.smart_fades.available;
 
@@ -371,6 +390,7 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [devToken, setDevToken] = useState("");
   const [userToken, setUserToken] = useState("");
+  const [showTokens, setShowTokens] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(() => {
@@ -485,9 +505,12 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
               <label className="field">
                 <span className="field__label">Developer token (JWT)</span>
                 <textarea
-                  className="input input--mono"
+                  className={cx("input input--mono", !showTokens && "input--masked")}
                   rows={3}
                   value={devToken}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
                   onChange={(e) => setDevToken(e.target.value)}
                   placeholder={am.developer_token_source === "env" ? "Set by server config (takes precedence)" : "eyJhbGciOiJFUzI1NiIs…"}
                   spellCheck={false}
@@ -496,13 +519,21 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
               <label className="field">
                 <span className="field__label">Music user token</span>
                 <textarea
-                  className="input input--mono"
+                  className={cx("input input--mono", !showTokens && "input--masked")}
                   rows={3}
                   value={userToken}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
                   onChange={(e) => setUserToken(e.target.value)}
                   placeholder={am.user_token_source === "env" ? "Set by server config (takes precedence)" : "Paste a Music-User-Token"}
                   spellCheck={false}
                 />
+              </label>
+              <label className="switch-row">
+                <input type="checkbox" role="switch" checked={showTokens} onChange={(e) => setShowTokens(e.target.checked)} />
+                <span className="switch" aria-hidden />
+                <span>Show tokens</span>
               </label>
               <div className="btn-group btn-group--wrap">
                 <button className="btn btn--primary" type="submit" disabled={saving || (!devToken.trim() && !userToken.trim())}>
@@ -559,6 +590,13 @@ function StatusCard({ status }: { status: AdminStatus | null }) {
       <div className="status-grid">
         <StatusItem label="Apple Music" ok={status.apple_music.ok} text={status.apple_music.ok ? "Connected" : status.apple_music.error || (status.apple_music.configured ? "Error" : "Not configured")} />
         <StatusItem label="Smart fades" ok={status.smart_fades.available} text={status.smart_fades.available ? "Available" : status.smart_fades.error || "Unavailable"} />
+        {status.fallback && (
+          <StatusItem
+            label="Fallback playlist"
+            ok={!status.fallback.error}
+            text={status.fallback.error || (status.fallback.tracks > 0 ? `${status.fallback.tracks.toLocaleString()} tracks loaded` : "No tracks loaded")}
+          />
+        )}
         <StatusItem label="Listening devices" ok text={String(status.listeners)} />
       </div>
       {facts.length > 0 && <p className="status-facts">{facts.join(" · ")}</p>}

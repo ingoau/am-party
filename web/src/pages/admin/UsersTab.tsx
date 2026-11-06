@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, Minus, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, Minus, Trash2, X } from "lucide-react";
 import { api } from "../../api/client";
 import { ALL_PERMISSIONS, type Permission, type PermissionInfo, type User } from "../../api/types";
 import { useLiveEvent } from "../../hooks/live";
@@ -27,12 +27,32 @@ export function UsersTab({ me }: { me: User }) {
   const groups = useMemo(() => groupCatalog(catalog), [catalog]);
   const [confirmDialog, confirm] = useConfirm();
 
+  // Only the newest /users response applies, and none while a toggle is still in flight
+  // (that response could predate the change and flip the optimistic switch back).
+  const loadSeq = useRef(0);
+  const inFlight = useRef(0);
   const load = useCallback(() => {
+    const seq = ++loadSeq.current;
     api
       .users()
-      .then((r) => setUsers(r.users))
+      .then((r) => {
+        if (seq === loadSeq.current && inFlight.current === 0) setUsers(r.users);
+      })
       .catch(flash.err);
   }, []);
+  /** Run one per-user change: optimistic patch, then a delta request (never a full set built from a stale render). */
+  const mutate = async (fn: () => Promise<unknown>, okMsg?: string) => {
+    inFlight.current++;
+    try {
+      await fn();
+      if (okMsg) flash.ok(okMsg);
+    } catch (e) {
+      flash.err(e);
+    } finally {
+      inFlight.current--;
+      load();
+    }
+  };
   useEffect(load, [load]);
   useLiveEvent("users_changed", load);
 
@@ -48,32 +68,26 @@ export function UsersTab({ me }: { me: User }) {
 
   const patchLocal = (id: number, fn: (u: User) => User) => setUsers((list) => list?.map((u) => (u.id === id ? fn(u) : u)) ?? list);
 
-  const togglePerm = async (u: User, p: Permission) => {
+  const togglePerm = (u: User, p: Permission) => {
     if (u.is_admin) return;
     const on = !u.granted.includes(p);
-    const granted = on ? [...u.granted, p] : u.granted.filter((x) => x !== p);
-    patchLocal(u.id, (x) => ({ ...x, granted, permissions: granted }));
-    try {
-      await api.patchUser(u.id, { permissions: granted });
-    } catch (e) {
-      flash.err(e);
-    } finally {
-      load();
-    }
+    patchLocal(u.id, (x) => {
+      const granted = on ? [...new Set([...x.granted, p])] : x.granted.filter((g) => g !== p);
+      return { ...x, granted, permissions: granted };
+    });
+    void mutate(() => api.bulkUsers({ user_ids: [u.id], ...(on ? { add: [p] } : { remove: [p] }) }));
   };
 
   /** One-tap role for someone waiting for access. */
-  const grantPreset = async (u: User, preset: Preset) => {
-    const granted = [...new Set([...u.granted, ...preset.permissions])];
-    patchLocal(u.id, (x) => ({ ...x, granted, permissions: granted }));
-    try {
-      await api.patchUser(u.id, { permissions: granted });
-      flash.ok(`${u.name} is now ${preset.id === "approver" ? "an" : "a"} ${preset.label}`);
-    } catch (e) {
-      flash.err(e);
-    } finally {
-      load();
-    }
+  const grantPreset = (u: User, preset: Preset) => {
+    patchLocal(u.id, (x) => {
+      const granted = [...new Set([...x.granted, ...preset.permissions])];
+      return { ...x, granted, permissions: granted };
+    });
+    void mutate(
+      () => api.bulkUsers({ user_ids: [u.id], add: [...preset.permissions] }),
+      `${u.name} is now ${preset.id === "approver" ? "an" : "a"} ${preset.label}`,
+    );
   };
 
   const toggleAdmin = async (u: User) => {
@@ -84,18 +98,11 @@ export function UsersTab({ me }: { me: User }) {
         description: "You'll lose People and Settings straight away. Another admin will have to give it back.",
         confirmLabel: "Remove my admin access",
         danger: true,
-        icon: <ShieldOff size={22} />,
       });
       if (!ok) return;
     }
     patchLocal(u.id, (x) => ({ ...x, is_admin: value, permissions: value ? [...ALL_PERMISSIONS] : x.granted }));
-    try {
-      await api.patchUser(u.id, { is_admin: value });
-    } catch (e) {
-      flash.err(e);
-    } finally {
-      load();
-    }
+    void mutate(() => api.bulkUsers({ user_ids: [u.id], is_admin: value }));
   };
 
   const remove = async (u: User) => {
@@ -104,7 +111,6 @@ export function UsersTab({ me }: { me: User }) {
       description: "They'll lose all host access. They can sign in again later, but will have to wait for someone to grant them access.",
       confirmLabel: "Remove",
       danger: true,
-      icon: <Trash2 size={22} />,
     });
     if (!ok) return;
     try {
@@ -139,7 +145,6 @@ export function UsersTab({ me }: { me: User }) {
       title: n === 1 ? `Make ${selectedUsers[0]!.name} an admin?` : `Make ${n} people admins?`,
       description: "Admins have every permission and can manage people and settings, including removing other admins.",
       confirmLabel: n === 1 ? "Make admin" : `Make ${n} admins`,
-      icon: <ShieldCheck size={22} />,
     });
     if (ok) void bulk({ is_admin: true }, `${who(n)} made admin`);
   };
@@ -150,7 +155,6 @@ export function UsersTab({ me }: { me: User }) {
         description: "Your selection includes you. You'll lose People and Settings straight away.",
         confirmLabel: "Remove admin",
         danger: true,
-        icon: <ShieldOff size={22} />,
       });
       if (!ok) return;
     }
