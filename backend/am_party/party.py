@@ -30,6 +30,7 @@ TRACK_CACHE_SIZE = 5000
 RECENT_FALLBACK = 30
 FALLBACK_REFRESH = 3600
 HISTORY_KEEP = 1000  # play history rows kept
+PREVIOUS_RESTART = 3.0  # "previous" restarts the song once it has played this long
 WS_SEND_TIMEOUT = 5.0  # a client that can't take a message this fast is dropped
 MIN_POSITION_GAP = 1e-6  # renumber queue positions before floats collapse
 
@@ -762,6 +763,50 @@ class Party:
     async def add_to_queue(self, track_id: str, position: str, user: User) -> None:
         track = await self.get_track(track_id)
         await self._insert_queue(track, "admin", position, user=user)
+
+    async def previous(self) -> str:
+        """Restart the current song, or go back to the one before it.
+
+        Within PREVIOUS_RESTART seconds of a song's start this goes back: the previous
+        song and then the current one are put at the front of the queue, so "skip"
+        afterwards returns to where the party was. Their history rows are dropped
+        (they are logged again when they play), so repeated presses keep going back.
+        Returns "restart" or "previous".
+        """
+        eng = self.engine
+        if not eng or not eng.now:
+            raise ApiError(409, "Nothing is playing")
+        rows = await self.db.fetchall("SELECT * FROM history ORDER BY id DESC LIMIT 2")
+        cur = eng.now.candidate
+        if eng.position() > PREVIOUS_RESTART or len(rows) < 2 or rows[0]["track_id"] != cur.track.id:
+            eng.seek(0)
+            self.changed()
+            return "restart"
+        prev = Track.from_dict(json.loads(rows[1]["track"]))
+        first = self.queue[0]["position"] if self.queue else 1.0
+        items = [(prev, rows[1]["source"], first - 2), (cur.track, cur.source, first - 1)]
+        added: list[dict[str, Any]] = []
+        async with self.db.transaction():
+            await self.db.execute("DELETE FROM history WHERE id IN (?,?)", rows[0]["id"], rows[1]["id"])
+            for track, source, pos in items:
+                qid = await self.db.execute(
+                    "INSERT INTO queue(position, track_id, track, source, request_id, added_by, created_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    pos,
+                    track.id,
+                    json.dumps(track.to_dict()),
+                    source,
+                    None,
+                    None,
+                    now(),
+                )
+                added.append({"id": qid, "position": pos, "track": track, "source": source, "request_id": None})
+        self.queue += added
+        self.queue.sort(key=lambda q: (q["position"], q["id"]))
+        # skip even past a track that is already locked in / being mixed in
+        eng.skip(requeue=True)
+        self._after_queue_change()
+        return "previous"
 
     async def remove_from_queue(self, qid: int) -> None:
         if not any(q["id"] == qid for q in self.queue):

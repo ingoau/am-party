@@ -364,3 +364,86 @@ async def test_move_index_validation(tmp_path: Path) -> None:
         r = await client.patch("/api/admin/settings", json={"crossfade_duration": "abc"}, headers=hdr)
         assert r.status == 400
     await p.db.close()
+
+
+# -- previous -------------------------------------------------------------------------------
+class _FakeEngine:
+    def __init__(self) -> None:
+        self.now: Any = None
+        self.pos = 0.0
+        self.locked = None
+        self.inflight: list[Any] = []
+        self.paused = False
+        self.seeks: list[float] = []
+        self.skips: list[bool] = []
+
+    def position(self) -> float:
+        return self.pos
+
+    def seek(self, pos: float) -> bool:
+        self.seeks.append(pos)
+        return True
+
+    def skip(self, requeue: bool = False) -> None:
+        self.skips.append(requeue)
+
+    def poke(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_previous_goes_back_through_history(tmp_path: Path) -> None:
+    from am_party.player.engine import Candidate, NowPlaying
+
+    p = await make_party(tmp_path)
+    eng = _FakeEngine()
+    p.engine = eng  # type: ignore[assignment]
+
+    async def play(tid: str, source: str = "admin") -> None:
+        c = Candidate(Track(id=tid, title=tid, artist="a"), None, source)
+        eng.now = NowPlaying(candidate=c, prepared=None, started_at=0)  # type: ignore[arg-type]
+        await p.on_track_started(eng.now)
+
+    await p.add_to_queue("0", "end", None)  # type: ignore[arg-type]
+    for tid in ("A", "B", "C"):
+        await play(tid, "fallback" if tid == "B" else "admin")
+
+    # well into the song: restart it
+    eng.pos = 10.0
+    assert await p.previous() == "restart"
+    assert eng.seeks == [0] and not eng.skips
+
+    # near the start: B, then C (where we were), then the old queue
+    eng.pos = 1.0
+    assert await p.previous() == "previous"
+    assert eng.skips == [True]
+    assert [q["track"].id for q in p.queue] == ["B", "C", "0"]
+    assert [q["source"] for q in p.queue][:2] == ["fallback", "admin"]
+
+    # B starts again (consumed from the queue); pressing again goes to A, not C
+    q = p.queue[0]
+    c = Candidate(q["track"], q["id"], q["source"])
+    eng.now = NowPlaying(candidate=c, prepared=None, started_at=0)  # type: ignore[arg-type]
+    await p.on_track_started(eng.now)
+    assert await p.previous() == "previous"
+    assert [q["track"].id for q in p.queue] == ["A", "B", "C", "0"]
+    rows = await p.db.fetchall("SELECT track_id FROM history ORDER BY id")
+    assert [r["track_id"] for r in rows] == []
+    # nothing earlier: restart
+    await play("A")
+    eng.seeks.clear()
+    assert await p.previous() == "restart"
+    assert eng.seeks == [0]
+    await p.close()
+    await p.db.close()
+
+
+@pytest.mark.asyncio
+async def test_previous_with_nothing_playing(tmp_path: Path) -> None:
+    p = await make_party(tmp_path)
+    p.engine = _FakeEngine()  # type: ignore[assignment]
+    with pytest.raises(ApiError) as exc:
+        await p.previous()
+    assert exc.value.status == 409
+    await p.close()
+    await p.db.close()

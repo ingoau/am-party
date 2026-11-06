@@ -11,7 +11,7 @@ import {
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToParentElement, restrictToVerticalAxis } from "@dnd-kit/modifiers";
-import { ArrowUpToLine, GripVertical, ListStart, Pause, Play, Plus, SkipForward, Trash2 } from "lucide-react";
+import { ArrowUpToLine, GripVertical, ListStart, Pause, Play, Plus, SkipBack, SkipForward, Trash2 } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { QueueItem, Track, User } from "../../api/types";
 import { useLive } from "../../hooks/live";
@@ -130,7 +130,13 @@ export function QueueTab({ me }: { me: User }) {
                 {paused ? "Paused · " : ""}
                 {np.artist}
               </div>
-              <LiveProgress np={np} clockOffset={clockOffset} paused={paused} tickMs={500} />
+              <LiveProgress
+                np={np}
+                clockOffset={clockOffset}
+                paused={paused}
+                tickMs={500}
+                onSeek={canSkip ? (s) => void run(() => api.seek(s)) : undefined}
+              />
             </>
           ) : (
             <>
@@ -141,6 +147,16 @@ export function QueueTab({ me }: { me: User }) {
           {(canPause || canSkip) && (
             <>
               <div className="np-card__controls">
+                {canSkip && (
+                  <button
+                    className="btn"
+                    disabled={busy || !np}
+                    onClick={() => run(() => api.previous())}
+                    title="Restart this song, or go back to the previous one if it just started"
+                  >
+                    <SkipBack size={18} fill="currentColor" /> Previous
+                  </button>
+                )}
                 {canPause &&
                   (paused ? (
                     <button

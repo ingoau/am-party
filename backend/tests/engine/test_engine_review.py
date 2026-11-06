@@ -248,3 +248,78 @@ async def test_cancelled_analysis_does_not_poison_next_request() -> None:
     res = await w.analyze_file("/y.f32")
     assert res == {"bpm": 2}, res
     assert not spawned  # stale reply drained; models were not reloaded
+
+
+# -- seek / previous --------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_seek_jumps_within_current_track(media) -> None:  # noqa: ANN001
+    eng, party, _ = build(media, ["a", "b"], transition=None)
+    out = RealtimeOutput()
+    eng.output = out
+    await eng.start()
+    await wait_for(lambda: party.started == ["a"], 30)
+    await asyncio.sleep(0.5)
+    assert eng.seek(7.0)
+    assert eng.position() == pytest.approx(7.0, abs=0.2)  # reported right away
+    t0 = time.time()
+    await wait_for(lambda: party.started == ["a", "b"], 30)
+    # only ~3s of "a" were left after the seek (plus the output buffer)
+    assert time.time() - t0 < 5.0
+    assert eng.now is not None and eng.now.candidate.track.id == "b"
+    await eng.stop()
+    assert False in out.ends  # old buffered audio was cut
+
+
+@pytest.mark.asyncio
+async def test_seek_while_paused_resumes_there(media) -> None:  # noqa: ANN001
+    eng, party, _ = build(media, ["a", "b"], transition=None)
+    out = PosOutput()
+    eng.output = out
+    await eng.start()
+    await wait_for(lambda: party.started == ["a"], 30)
+    await asyncio.sleep(0.3)
+    await eng.pause()
+    await asyncio.sleep(0.2)
+    assert eng.seek(6.0)
+    await asyncio.sleep(0.3)
+    assert eng.position() == pytest.approx(6.0, abs=0.01)
+    assert out.positions[-1] == ("a", pytest.approx(6.0, abs=0.01), False)
+    await eng.resume()
+    await wait_for(lambda: any(p[0] == "a" and p[2] for p in out.positions[-1:]), 10)
+    assert out.positions[-1][1] == pytest.approx(6.0, abs=0.5)
+    await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_seek_without_track_is_noop(media) -> None:  # noqa: ANN001
+    eng, _, _ = build(media, [])
+    assert eng.seek(5.0) is False
+
+
+@pytest.mark.asyncio
+async def test_requeue_skip_mid_transition_plays_new_front(media) -> None:  # noqa: ANN001
+    """skip(requeue=True) during a transition plays what the party now has first,
+    not the track that was being mixed in."""
+    eng, party, _ = build(media, ["a", "b", "c"])
+    out = RealtimeOutput()
+    eng.output = out
+    seen = asyncio.Event()
+
+    from tests.engine.test_engine import concat_transition
+
+    async def transition(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        res = await concat_transition(*args, **kwargs)
+        res.handover_offset += 5.0
+        seen.set()
+        return res
+
+    eng.build_transition = transition
+    await eng.start()
+    await asyncio.wait_for(seen.wait(), 30)
+    await wait_for(lambda: len(out.data) > 6.5 * BYTES_PER_SECOND, 30)
+    assert party.started == ["a"]
+    party.queue = [party.queue[1], party.queue[0]]  # "previous" put c in front of b
+    eng.skip(requeue=True)
+    await wait_for(lambda: len(party.started) >= 2, 30)
+    await eng.stop()
+    assert party.started[:2] == ["a", "c"]
