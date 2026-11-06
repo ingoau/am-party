@@ -1,5 +1,7 @@
 # am-party
 
+[![Container](https://github.com/ingoau/am-party/actions/workflows/container.yml/badge.svg)](https://github.com/ingoau/am-party/actions/workflows/container.yml)
+
 A self-hosted party jukebox. Any device opens the page and plays the party music **in tight sync** (Sendspin protocol). Guests scan a QR code to request songs from **Apple Music**, every request goes through an **OIDC-authenticated approval panel**, and tracks are mixed with Music Assistant's **smart crossfade**.
 
 - `/` — TV / listening screen: now playing, up next, QR code, listen toggle, mute and volume per device
@@ -26,6 +28,11 @@ mkdir -p data secrets     # create these yourself so they aren't created root-ow
 docker compose up -d --build
 docker compose logs -f    # WARN lines tell you if OIDC / Apple Music still need setup
 ```
+
+To use the prebuilt image instead of building locally, set `image: ghcr.io/ingoau/am-party:latest`
+in `compose.yaml`, remove the `build:` block, and run `docker compose up -d`. Images are built
+by GitHub Actions (linux/amd64) after the test suite passes: `latest` tracks `main`, `vX.Y.Z`
+tags publish `X.Y.Z` and `X.Y`, and every build is also tagged `sha-<commit>`.
 
 The container starts as root only long enough to hand a root-owned `./data` to uid 1000,
 then drops privileges (`setpriv`). If you run it with `user:` set and `./data` isn't
