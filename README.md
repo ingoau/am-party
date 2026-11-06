@@ -48,7 +48,7 @@ Then:
 2. Set `AM_PARTY_ADMIN_EMAILS=you@example.com` (recommended), then open `${AM_PARTY_PUBLIC_URL}/admin` and sign in. Without `AM_PARTY_ADMIN_EMAILS` the *first* person to sign in becomes admin (the log shows a warning until someone has).
 3. **Settings → Apple Music**: click **Connect Apple Music** and sign in with your Apple ID (MusicKit, same flow as Music Assistant). Or provide tokens as files, see below.
 4. **Settings → Fallback playlist**: pick one of your playlists or paste an Apple Music playlist link.
-5. Open `/` on the TVs/speakers, tap **Listen**. Guests scan the QR code.
+5. Open `/tv` on the TVs/speakers, tap **Listen**. Guests scan the QR code.
 
 Put it behind HTTPS (e.g. Cloudflare Tunnel or Tailscale Funnel) so guests' phones can reach it: browsers need a secure context for Opus decoding, and the MusicKit sign-in needs a real https origin.
 
