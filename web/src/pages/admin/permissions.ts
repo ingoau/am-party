@@ -32,10 +32,16 @@ export const DEFAULT_PRESET: Preset = {
 export const PRESETS: Preset[] = [
   DEFAULT_PRESET,
   {
-    id: "controller",
-    label: "Controller",
+    id: "dj",
+    label: "DJ",
     description: "Add, reorder and remove songs; skip and pause",
     permissions: ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause"],
+  },
+  {
+    id: "controller",
+    label: "Controller",
+    description: "Everything a DJ can do, plus claim and control speakers",
+    permissions: ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause", "claim_speakers"],
   },
   { id: "approver", label: "Approver", description: "Approve or reject guest requests", permissions: ["approve_requests"] },
 ];
