@@ -80,12 +80,26 @@ async def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[
 async def settle() -> None:
     for _ in range(5):
         await asyncio.sleep(0.02)
+    await asyncio.sleep(0)
+
+
+async def until_idle(mgr: SpeakerManager, timeout: float = 5.0) -> None:
+    """Wait for the manager's background work (joins, syncs, reports) to finish."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        busy = [t for t in mgr._tasks if not t.done() and t.get_coro().__name__ != "_prune_loop"]  # type: ignore[union-attr]
+        if not busy:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("speaker manager didn't settle")
 
 
 async def connect(mgr: SpeakerManager, out: FakeOutput, cid: str, name: str = "Kitchen", vol: int = 50, muted: bool = False) -> dict[str, Any]:
     out.players[cid] = [vol, muted, True]
     mgr.on_client_joined(cid, name)
     await settle()
+    await until_idle(mgr)
     return await mgr.device_view(cid)
 
 
@@ -93,6 +107,7 @@ async def disconnect(mgr: SpeakerManager, out: FakeOutput, cid: str) -> None:
     out.players.pop(cid, None)
     mgr.on_client_left(cid)
     await settle()
+    await until_idle(mgr)
 
 
 @pytest.mark.asyncio
