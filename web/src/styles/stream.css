@@ -1,0 +1,80 @@
+/* /stream: listen-only page (no TV screen). One narrow column, phone-first. */
+.stream {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4) calc(var(--space-6) + env(safe-area-inset-bottom));
+}
+.stream__header {
+  margin-bottom: var(--space-6);
+}
+.stream__party {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--fs-5);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+.stream__np {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: var(--fs-2);
+  overflow-wrap: anywhere;
+}
+.stream__np-label {
+  color: var(--faint);
+}
+.stream__np-track {
+  color: var(--text);
+}
+.stream__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-6);
+}
+.stream__listen {
+  flex: 1;
+  min-width: 0;
+}
+.stream__listen svg {
+  width: 20px;
+  height: 20px;
+}
+.stream__listen .eq {
+  width: 18px;
+  height: 16px;
+}
+.stream__mute {
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+.stream__mute.is-muted {
+  color: var(--err);
+}
+.stream__settings {
+  padding: var(--space-5);
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.stream__settings .sync {
+  margin-bottom: var(--space-2);
+}
+.stream__links {
+  display: flex;
+  gap: var(--space-5);
+  justify-content: center;
+  margin-top: var(--space-6);
+  font-size: var(--fs-1);
+}
+.stream__links a {
+  color: var(--muted);
+}
+.stream__links a:hover {
+  color: var(--text);
+}

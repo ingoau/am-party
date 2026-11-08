@@ -3,6 +3,7 @@ import { Route, Routes } from "react-router";
 
 // Route-level code splitting: guests on / don't download the audio stack.
 const TvPage = lazy(() => import("./pages/Tv").then((m) => ({ default: m.TvPage })));
+const StreamPage = lazy(() => import("./pages/Stream").then((m) => ({ default: m.StreamPage })));
 const RequestPage = lazy(() => import("./pages/Request").then((m) => ({ default: m.RequestPage })));
 const AdminApp = lazy(() => import("./pages/admin/AdminApp"));
 
@@ -18,6 +19,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<RequestPage />} />
         <Route path="/tv" element={<TvPage />} />
+        <Route path="/stream" element={<StreamPage />} />
         <Route path="/admin/*" element={<AdminApp />} />
         <Route path="*" element={<RequestPage />} />
       </Routes>

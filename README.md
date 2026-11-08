@@ -6,6 +6,7 @@ A self-hosted party jukebox. Any device opens the page and plays the party music
 
 - `/` — guest page (no login): search Apple Music, request songs, see request status
 - `/tv` — TV / listening screen: now playing, up next, QR code, listen toggle, mute and volume per device
+- `/stream` — listen-only page: connect a device (phone, laptop, speaker box) to the audio stream without the TV screen
 - `/admin` — sign in with your OIDC provider. The **first user to sign in becomes admin**; everyone after that has no privileges until an admin grants them (approve requests, manage queue, admin)
 
 ## How it works

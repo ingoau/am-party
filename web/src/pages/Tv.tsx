@@ -5,7 +5,7 @@ import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { useIdle } from "../hooks/useIdle";
 import { useSendspin, type SendspinStatus } from "../hooks/useSendspin";
-import { fmtBitrate, fmtBytes, useSendspinTraffic } from "../hooks/sendspinTraffic";
+import { DeviceSettingsForm, syncLabel, type Sendspin } from "../components/DeviceSettings";
 import { LiveProgress } from "../components/ProgressBar";
 import { LazyToaster } from "../components/lazyToast";
 import { QrCode } from "../components/QrCode";
@@ -235,19 +235,7 @@ export function TvPage() {
                 {sp.muted || sp.volume === 0 ? <VolumeX size={22} /> : <Volume2 size={22} />}
               </button>
             )}
-            <SettingsPopover
-              open={settingsOpen}
-              setOpen={setSettingsOpen}
-              deviceName={sp.deviceName}
-              setDeviceName={sp.setDeviceName}
-              renamePending={sp.renamePending}
-              volume={sp.volume}
-              setVolume={sp.setVolume}
-              muted={sp.muted}
-              syncDelay={sp.syncDelay}
-              setSyncDelay={sp.setSyncDelay}
-              status={sp.status}
-            />
+            <SettingsPopover open={settingsOpen} setOpen={setSettingsOpen} sp={sp} />
             {!sp.status.listening && <span className="tv-controls__hint">Listen on this device</span>}
             <AudioAlert status={sp.status} />
           </div>
@@ -464,23 +452,6 @@ function hostOf(url: string): string {
   }
 }
 
-function syncLabel(status: SendspinStatus): string {
-  switch (status.sync) {
-    case "off":
-      return "Not listening";
-    case "connecting":
-      return "Connecting audio…";
-    case "syncing":
-      return "Syncing clock…";
-    case "synced":
-      return status.syncErrorMs !== null
-        ? `In sync · ±${Math.max(1, Math.round(Math.abs(status.syncErrorMs)))} ms`
-        : "In sync";
-    case "error":
-      return status.error ? `Audio error: ${status.error}` : "Audio error";
-  }
-}
-
 /** Tiny always-visible dot when this device is listening but not (yet) in sync. */
 function AudioAlert({ status }: { status: SendspinStatus }) {
   const bad = status.sync === "error" || (status.listening && (status.sync === "connecting" || status.sync === "syncing"));
@@ -493,60 +464,13 @@ function AudioAlert({ status }: { status: SendspinStatus }) {
   );
 }
 
-function SettingsPopover({
-  open,
-  setOpen,
-  deviceName,
-  setDeviceName,
-  renamePending,
-  volume,
-  setVolume,
-  muted,
-  syncDelay,
-  setSyncDelay,
-  status,
-}: {
-  open: boolean;
-  setOpen: (v: boolean) => void;
-  deviceName: string;
-  setDeviceName: (v: string) => void;
-  renamePending: boolean;
-  volume: number;
-  setVolume: (v: number) => void;
-  muted: boolean;
-  syncDelay: number;
-  setSyncDelay: (v: number) => void;
-  status: SendspinStatus;
-}) {
-  const [name, setName] = useState(deviceName);
-  const [delay, setDelay] = useState(String(syncDelay));
-  const traffic = useSendspinTraffic(open && status.listening);
+function SettingsPopover({ open, setOpen, sp }: { open: boolean; setOpen: (v: boolean) => void; sp: Sendspin }) {
+  const commitName = useRef(() => {});
   const ref = useRef<HTMLDivElement>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (open) {
-      setName(deviceName);
-      setDelay(String(syncDelay));
-    }
-    // Only resync the fields when the popover opens.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
-  // Volume and delay apply live (the delay shortly after typing stops). The name is committed on
-  // Enter / blur / close only, and takes effect the next time Listen is tapped.
-  const commitName = useRef(() => {});
-  useEffect(() => {
-    commitName.current = () => {
-      if (name.trim() && name.trim() !== deviceName) setDeviceName(name);
-    };
-  });
-  useEffect(() => {
-    if (!open || delay === "" || Number(delay) === syncDelay) return;
-    const t = window.setTimeout(() => setSyncDelay(Number(delay)), 400);
-    return () => window.clearTimeout(t);
-  }, [delay, open, syncDelay, setSyncDelay]);
-
+  // The name is committed on close too (the form only commits on Enter / blur by itself).
   const close = useRef(setOpen);
   useEffect(() => {
     close.current = (v: boolean) => {
@@ -602,67 +526,7 @@ function SettingsPopover({
       </button>
       {open && (
         <div className="popover" role="dialog" aria-label="Device settings" ref={dialogRef}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              commitName.current();
-            }}
-          >
-            <div className="field">
-              <span className="field__label" id="tv-vol-label">
-                Volume
-                <span className="field__value">{muted ? "Muted" : `${Math.round(volume)}%`}</span>
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={1}
-                value={muted ? 0 : volume}
-                onChange={(e) => setVolume(Number(e.target.value))}
-                aria-labelledby="tv-vol-label"
-                className="range"
-                style={{ ["--val" as string]: `${muted ? 0 : volume}%` }}
-              />
-            </div>
-            <label className="field">
-              <span className="field__label">Device name</span>
-              <input
-                className="input"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onBlur={() => commitName.current()}
-                maxLength={60}
-                enterKeyHint="done"
-              />
-              {renamePending && <span className="field__hint">The new name shows up next time you tap Listen.</span>}
-            </label>
-            <label className="field">
-              <span className="field__label">Speaker delay (ms)</span>
-              <input
-                className="input"
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={5000}
-                step={10}
-                value={delay}
-                onChange={(e) => setDelay(e.target.value)}
-              />
-              <span className="field__hint">Raise if this speaker sounds late compared with the others.</span>
-            </label>
-            <div className={`sync sync--${status.sync}`} role="status">
-              <span className="sync__dot" aria-hidden />
-              <span className="sync__label">{syncLabel(status)}</span>
-            </div>
-            {status.listening && status.codec && <div className="field__hint">Stream: {status.codec}{status.outputLatencyMs !== null ? ` · output latency ${Math.round(status.outputLatencyMs)} ms` : ""}</div>}
-            {status.listening && (
-              <div className="field__hint" title="Audio stream data received by this device since you tapped Listen">
-                Data received: {fmtBytes(traffic.bytes)}
-                {traffic.bytesPerSec !== null ? ` · ${fmtBitrate(traffic.bytesPerSec)}` : ""}
-              </div>
-            )}
-          </form>
+          <DeviceSettingsForm sp={sp} idPrefix="tv" commitRef={commitName} />
         </div>
       )}
     </div>
