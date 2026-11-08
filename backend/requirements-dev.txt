@@ -1,3 +1,4 @@
 # Test dependencies (on top of requirements.txt); used by the Dockerfile `test` target.
 pytest==9.2.0
 pytest-asyncio==1.4.1.post1
+pytest-xdist==3.8.0
