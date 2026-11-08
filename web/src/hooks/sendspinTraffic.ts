@@ -57,21 +57,23 @@ export const resetTraffic = () => {
 
 /** "1.2 MB", "340 KB" (decimal units, like network meters). */
 export function fmtBytes(n: number): string {
-  if (n < 1000) return `${Math.round(n)} B`;
+  if (Math.round(n) < 1000) return `${Math.round(n)} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let v = n / 1000;
   let i = 0;
-  while (v >= 1000 && i < units.length - 1) {
+  // Round before comparing so 999.96 KB reads "1.0 MB", not "1000 KB".
+  const shown = (x: number) => (x >= 99.95 ? Math.round(x) : Math.round(x * 10) / 10);
+  while (shown(v) >= 1000 && i < units.length - 1) {
     v /= 1000;
     i++;
   }
-  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+  return `${shown(v) >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
 /** Bits per second as "320 kb/s" / "1.4 Mb/s". */
 export function fmtBitrate(bytesPerSec: number): string {
   const kbps = (bytesPerSec * 8) / 1000;
-  if (kbps < 1000) return `${Math.round(kbps)} kb/s`;
+  if (Math.round(kbps) < 1000) return `${Math.round(kbps)} kb/s`;
   return `${(kbps / 1000).toFixed(1)} Mb/s`;
 }
 
@@ -79,10 +81,11 @@ export function fmtBitrate(bytesPerSec: number): string {
 const RATE_WINDOW_MS = 5000;
 
 export type Traffic = { bytes: number; bytesPerSec: number | null };
+type TrafficState = Traffic & { live: boolean };
 
 /** Poll the counter once a second while `active` (e.g. the settings popover is open while listening). */
 export function useSendspinTraffic(active: boolean): Traffic {
-  const [traffic, setTraffic] = useState<Traffic>(() => ({ bytes: received, bytesPerSec: null }));
+  const [traffic, setTraffic] = useState<TrafficState>({ bytes: 0, bytesPerSec: null, live: false });
   useEffect(() => {
     if (!active) return;
     const samples: { t: number; bytes: number }[] = [];
@@ -95,11 +98,15 @@ export function useSendspinTraffic(active: boolean): Traffic {
       while (samples.length > 2 && now - samples[1].t >= RATE_WINDOW_MS) samples.shift();
       const first = samples[0];
       const dt = (now - first.t) / 1000;
-      setTraffic({ bytes, bytesPerSec: dt >= 0.5 ? (bytes - first.bytes) / dt : null });
+      setTraffic({ bytes, bytesPerSec: dt >= 0.5 ? (bytes - first.bytes) / dt : null, live: true });
     };
     tick();
     const t = window.setInterval(tick, 1000);
-    return () => window.clearInterval(t);
+    return () => {
+      window.clearInterval(t);
+      setTraffic((s) => ({ ...s, live: false }));
+    };
   }, [active]);
-  return traffic;
+  // Until the first tick of this activation, show the current total rather than an old reading.
+  return traffic.live ? traffic : { bytes: received, bytesPerSec: null };
 }
