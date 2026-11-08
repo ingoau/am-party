@@ -896,3 +896,72 @@ body [data-sonner-toaster][data-sonner-theme] {
   white-space: nowrap;
   border: 0;
 }
+
+/* ---------- Listening (shared by /tv and /stream) ---------- */
+/* Playing-on-this-device indicator (a real level meter would be better; this is a steady pulse). */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  width: 24px;
+  height: 22px;
+}
+.eq span {
+  flex: 1;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--accent);
+  transform-origin: bottom;
+  animation: bar 0.9s ease-in-out infinite alternate;
+}
+.eq span:nth-child(2) {
+  animation-delay: -0.3s;
+}
+.eq span:nth-child(3) {
+  animation-delay: -0.6s;
+}
+.eq span:nth-child(4) {
+  animation-delay: -0.15s;
+}
+@keyframes bar {
+  from {
+    transform: scaleY(0.35);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* Sync status (settings popover) + small always-visible alert when out of sync. Static dots. */
+.sync {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-1);
+  color: var(--muted);
+  font-weight: 500;
+  min-width: 0;
+  margin: 0 0 var(--space-3);
+}
+.sync__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: none;
+}
+.sync--connecting .sync__dot,
+.sync--syncing .sync__dot {
+  background: var(--warn);
+}
+.sync--synced .sync__dot {
+  background: var(--ok);
+}
+.sync--error .sync__dot {
+  background: var(--err);
+}
