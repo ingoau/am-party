@@ -71,18 +71,21 @@ export function SpeakersTab({ me }: { me: User }) {
     setSpeakers((list) => list && list.filter((s) => s.id !== id));
   };
 
-  const control = async (body: SpeakerControl, okText?: string) => {
-    if (body.ids.length === 0) return;
-    setBusy(true);
+  /** Returns whether it worked. `lock` disables the bulk/header buttons while it runs. */
+  const control = async (body: SpeakerControl, okText?: string, lock = true): Promise<boolean> => {
+    if (body.ids.length === 0) return false;
+    if (lock) setBusy(true);
     try {
       const r = await api.controlSpeakers(body);
       merge(r.speakers);
       if (okText) flash.ok(okText);
+      return true;
     } catch (e) {
       flash.err(e);
       load();
+      return false;
     } finally {
-      setBusy(false);
+      if (lock) setBusy(false);
     }
   };
 
@@ -226,8 +229,8 @@ export function SpeakersTab({ me }: { me: User }) {
                 clockOffset={clockOffset}
                 selected={selected.has(s.id)}
                 onSelect={() => toggle(s.id)}
-                onVolume={(v) => control({ ids: [s.id], volume: v })}
-                onMute={() => control({ ids: [s.id], muted: !s.muted })}
+                onVolume={(v) => control({ ids: [s.id], volume: v }, undefined, false)}
+                onMute={() => void control({ ids: [s.id], muted: !s.muted }, undefined, false)}
                 onPatch={(p) => patch(s, p)}
                 onRemoveOwner={(o) => removeOwner(s, o)}
                 onForget={() => forget(s)}
@@ -253,7 +256,7 @@ export function SpeakersTab({ me }: { me: User }) {
               >
                 <Minus size={18} />
               </button>
-              <VolumeSlider value={selVolume} disabled={busy} label="Volume of the selected speakers" onCommit={(v) => control({ ids: selIds, volume: v })} />
+              <VolumeSlider value={selVolume} label="Volume of the selected speakers" onCommit={(v) => control({ ids: selIds, volume: v }, undefined, false)} />
               <button
                 className="icon-btn"
                 disabled={busy}
@@ -318,7 +321,7 @@ function SpeakerRow({
   clockOffset: number;
   selected: boolean;
   onSelect: () => void;
-  onVolume: (v: number) => void;
+  onVolume: (v: number) => Promise<boolean>;
   onMute: () => void;
   onPatch: (p: { name?: string; locked?: boolean }) => void;
   onRemoveOwner: (o: { id: number; name: string }) => void;
@@ -440,6 +443,12 @@ function SpeakerName({ name, onRename }: { name: string; onRename: (name: string
 }
 
 /** Range input that follows `value` from the server and commits shortly after dragging pauses. */
+/**
+ * Range input that commits after a short pause, and right away on release. While it's being
+ * dragged (or a commit is in flight) it ignores incoming values, so live updates can't yank the
+ * thumb; a failed commit snaps it back to the server's value. A pending change is committed,
+ * not dropped, if the slider goes away, and always goes to the target it was made for.
+ */
 function VolumeSlider({
   value,
   muted,
@@ -451,14 +460,40 @@ function VolumeSlider({
   muted?: boolean;
   disabled?: boolean;
   label: string;
-  onCommit: (v: number) => void;
+  onCommit: (v: number) => Promise<boolean> | boolean | void;
 }) {
   const [v, setV] = useState(value);
-  useEffect(() => setV(value), [value]);
+  const holding = useRef(false); // pointer down or commit in flight
+  const pending = useRef<{ n: number; commit: typeof onCommit } | null>(null);
   const timer = useRef<number | undefined>(undefined);
-  const commitRef = useRef(onCommit);
-  commitRef.current = onCommit;
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  useEffect(() => {
+    if (!holding.current && !pending.current) setV(value);
+  }, [value]);
+
+  const flush = () => {
+    window.clearTimeout(timer.current);
+    const p = pending.current;
+    if (!p) return;
+    pending.current = null;
+    holding.current = true;
+    void Promise.resolve(p.commit(p.n)).then(
+      (ok) => {
+        holding.current = false;
+        if (ok === false) setV(valueRef.current);
+      },
+      () => {
+        holding.current = false;
+        setV(valueRef.current);
+      },
+    );
+  };
+  const flushRef = useRef(flush);
+  flushRef.current = flush;
+  useEffect(() => () => flushRef.current(), []);
+
   const shown = muted ? 0 : v;
   return (
     <input
@@ -471,11 +506,24 @@ function VolumeSlider({
       disabled={disabled}
       aria-label={label}
       style={{ ["--val" as string]: `${shown}%`, opacity: muted ? 0.5 : undefined }}
+      onPointerDown={() => {
+        holding.current = true;
+      }}
+      onPointerUp={() => {
+        holding.current = false;
+        flush();
+      }}
+      onPointerCancel={() => {
+        holding.current = false;
+        flush();
+      }}
+      onBlur={flush}
       onChange={(e) => {
         const n = Number(e.target.value);
         setV(n);
+        pending.current = { n, commit: onCommit };
         window.clearTimeout(timer.current);
-        timer.current = window.setTimeout(() => commitRef.current(n), 300);
+        timer.current = window.setTimeout(flush, 300);
       }}
     />
   );

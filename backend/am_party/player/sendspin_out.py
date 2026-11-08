@@ -173,10 +173,13 @@ class SendspinOutput:
         self._unsub: Callable[[], None] | None = None
         self._group_unsub: Callable[[], None] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
-        # client objects persist across reconnects: one volume listener each
-        self._volume_unsubs: dict[str, Callable[[], None]] = {}
-        # real players announced through on_client_joined and not yet through on_client_left
-        self._joined: set[str] = set()
+        # volume listener per client_id, with the client object it is attached to (the
+        # library replaces that object once a disconnected client is cleaned up)
+        self._volume_watch: dict[str, tuple[SendspinClient, Callable[[], None]]] = {}
+        # real players announced through on_client_joined and not yet through on_client_left,
+        # with the connection they were announced for (a reconnect can replace a still-open
+        # connection without any disconnect event)
+        self._joined: dict[str, object] = {}
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -238,9 +241,9 @@ class SendspinOutput:
         if self._unsub:
             self._unsub()
         await server.close()
-        for unsub in self._volume_unsubs.values():
+        for _client, unsub in self._volume_watch.values():
             unsub()
-        self._volume_unsubs.clear()
+        self._volume_watch.clear()
         self._joined.clear()
         for task in list(self._tasks):
             task.cancel()
@@ -295,6 +298,8 @@ class SendspinOutput:
             case ClientDisconnectedEvent(client_id=cid) | ClientRemovedEvent(client_id=cid):
                 asyncio.get_running_loop().call_soon(self._refresh_count)
                 asyncio.get_running_loop().call_soon(self._maybe_left, cid)
+                if isinstance(event, ClientRemovedEvent) and (watch := self._volume_watch.pop(cid, None)):
+                    watch[1]()
 
     def _on_group_event(self, _group: SendspinGroup, event: Any) -> None:
         # A connected member that got moved out (e.g. a "leave") is pulled back in.
@@ -319,8 +324,10 @@ class SendspinOutput:
         self._refresh_count()
         if client.is_connected and _player_role(client) is not None:
             self._watch_volume(client)
-            if client_id not in self._joined:
-                self._joined.add(client_id)
+            conn = client.connection
+            if client_id not in self._joined or self._joined[client_id] is not conn:
+                # new, or back on a fresh connection: (re)sync it either way
+                self._joined[client_id] = conn
                 self._notify(self.on_client_joined, client_id, client.name)
 
     def _maybe_left(self, client_id: str) -> None:
@@ -329,19 +336,22 @@ class SendspinOutput:
         client = self._server.get_client(client_id) if self._server else None
         if client is not None and client.is_connected:
             return  # already back (a reconnect replaced the old connection)
-        self._joined.discard(client_id)
+        del self._joined[client_id]
         self._notify(self.on_client_left, client_id)
 
     def _watch_volume(self, client: SendspinClient) -> None:
         cid = client.client_id
-        if cid in self._volume_unsubs:
-            return
+        watched = self._volume_watch.get(cid)
+        if watched is not None:
+            if watched[0] is client:
+                return
+            watched[1]()  # stale object from before a cleanup
 
         def _on_event(_client: SendspinClient, event: Any) -> None:
             if isinstance(event, VolumeChangedEvent) and cid in self._joined:
                 self._notify(self.on_client_volume, cid, event.volume, event.muted)
 
-        self._volume_unsubs[cid] = client.add_event_listener(_on_event)
+        self._volume_watch[cid] = (client, client.add_event_listener(_on_event))
 
     def _notify(self, cb: Callable[..., None] | None, *args: Any) -> None:
         if cb is None:

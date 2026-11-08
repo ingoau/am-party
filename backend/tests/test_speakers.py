@@ -178,6 +178,10 @@ async def test_locked_speaker_resists_local_changes(env: Any) -> None:
     await mgr.claim(user(1), me["claim_token"])
     await mgr.update(user(1), me["id"], {"locked": True})
     assert (await mgr.device_view(CID_A))["locked"]
+    # a locked speaker can't rename itself by announcing another name either
+    await disconnect(mgr, out, CID_A)
+    await connect(mgr, out, CID_A, "Renamed locally", vol=50)
+    assert (await mgr.device_view(CID_A))["name"] == "Kitchen"
     out.commands.clear()
     mgr.on_client_volume(CID_A, 90, True)
     await settle()
@@ -332,3 +336,68 @@ async def test_device_input_validation(env: Any) -> None:
     with pytest.raises(ApiError):
         await mgr.device_rename(CID_A, "   ")
     assert (await mgr.device_rename(CID_A, "x" * 100))["name"] == "x" * 40
+
+
+@pytest.mark.asyncio
+async def test_rejoin_without_disconnect_resyncs(env: Any) -> None:
+    mgr, out, _ = env
+    first = await connect(mgr, out, CID_A, vol=30)
+    # the device reconnects before the old connection was noticed as gone: no "left" event
+    out.players[CID_A] = [100, False, False]
+    mgr.on_client_joined(CID_A, "Kitchen")
+    await settle()
+    again = await mgr.device_view(CID_A)
+    assert again["claim_token"] != first["claim_token"]
+    mgr.on_client_volume(CID_A, 100, False)  # the new connection's defaults: not a local change
+    await settle()
+    out.players[CID_A][2] = True
+    await settle()
+    assert out.commands == [(CID_A, 30, None)]
+    assert (await mgr.list_for(user(9, admin=True)))[0]["volume"] == 30
+
+
+@pytest.mark.asyncio
+async def test_unsettable_defaults_are_not_adopted(env: Any) -> None:
+    mgr, out, _ = env
+    out.players[CID_A] = [100, False, False]  # never declares the commands
+    mgr.on_client_joined(CID_A, "Kitchen")
+    await asyncio.sleep(0.5)  # past SYNC_TIMEOUT
+    assert (await mgr.list_for(user(9, admin=True)))[0]["volume"] is None
+
+
+@pytest.mark.asyncio
+async def test_share_needs_the_sharer_to_still_control_the_speakers(env: Any) -> None:
+    mgr, out, _ = env
+    me = await connect(mgr, out, CID_A)
+    await mgr.claim(user(1), me["claim_token"])
+    await mgr.claim(user(2), me["claim_token"])
+    share = await mgr.create_share(user(1), {"ids": [me["id"]]})
+    await mgr.remove_owner(user(2), me["id"], 1)  # user 1 is removed after making the code
+    with pytest.raises(ApiError) as err:
+        await mgr.share_preview(share["token"])
+    assert err.value.status == 410
+    with pytest.raises(ApiError) as err:
+        await mgr.accept_share(user(1), share["token"])
+    assert err.value.status == 410
+    assert [o["id"] for o in (await mgr.list_for(user(2)))[0]["owners"]] == [2]
+    # per-user cap on open codes
+    for _ in range(speakers_mod.MAX_SHARES_PER_USER):
+        await mgr.create_share(user(2), {"ids": [me["id"]]})
+    with pytest.raises(ApiError) as err:
+        await mgr.create_share(user(2), {"ids": [me["id"]]})
+    assert err.value.status == 429
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_speakers_are_capped(env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr, out, _ = env
+    monkeypatch.setattr(speakers_mod, "MAX_UNCLAIMED", 2)
+    keep = await connect(mgr, out, CID_A, "Claimed")
+    await mgr.claim(user(1), keep["claim_token"])
+    await disconnect(mgr, out, CID_A)
+    for i in range(4):
+        cid = f"{i}" * 43
+        await connect(mgr, out, cid, f"S{i}")
+        await disconnect(mgr, out, cid)
+    names = sorted(s["name"] for s in await mgr.list_for(user(9, admin=True)))
+    assert names == ["Claimed", "S2", "S3"]

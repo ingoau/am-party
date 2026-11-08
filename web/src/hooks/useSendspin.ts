@@ -351,11 +351,16 @@ export function useSendspin() {
 
   /** Send a locally chosen name to the server (the speaker must be registered). */
   const pushName = async (clientId: string, name: string) => {
+    const session = sessionRef.current;
     try {
       const self = await api.renameSpeakerSelf(clientId, name);
       storage.set(K_NAME_DIRTY, "0");
-      applySelf(self);
+      if (sessionRef.current === session) applySelf(self);
     } catch (e) {
+      if (sessionRef.current !== session) {
+        storage.set(K_NAME_DIRTY, "1"); // sent again next time
+        return;
+      }
       if (e instanceof ApiError && (e.status === 423 || e.status === 404)) {
         // Locked (an owner controls the name) or not registered: keep the server's name.
         storage.set(K_NAME_DIRTY, e.status === 404 ? "1" : "0");

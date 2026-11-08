@@ -27,8 +27,15 @@ export function SpeakerClaim() {
     if (!token) return setClaim({ kind: "idle" });
     let alive = true;
     (async () => {
+      let me: Awaited<ReturnType<typeof api.me>>;
       try {
-        const me = await api.me();
+        me = await api.me();
+      } catch {
+        // can't tell who this is (flaky wifi): guests just get the normal page
+        if (alive) setClaim({ kind: "idle" });
+        return;
+      }
+      try {
         if (!alive) return;
         if (!me.user) {
           setClaim(me.oidc_enabled ? { kind: "signin", provider: me.oidc_name || "SSO" } : { kind: "idle" });

@@ -212,5 +212,10 @@ async def test_per_client_events_and_volume_commands() -> None:
         b = await make_client("Kitchen", h.url, h.session, ident, [PlayerCommand.VOLUME, PlayerCommand.MUTE])
         assert b.client._client_id == cid  # noqa: SLF001
         assert await wait_for(lambda: joined == [(cid, "Kitchen"), (cid, "Kitchen")])
+        # volume reports still arrive on the new connection (even if the library replaced
+        # the client object after the disconnect)
+        assert await wait_for(lambda: (st := h.out.client_player_state(cid)) is not None and st[2])
+        await b.client.send_player_state(available=True, volume=42, muted=True)
+        assert await wait_for(lambda: (cid, 42, True) in reported)
         await b.client.disconnect()
         assert await wait_for(lambda: left == [cid, cid])

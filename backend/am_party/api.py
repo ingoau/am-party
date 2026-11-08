@@ -689,7 +689,9 @@ async def delete_user(request: web.Request) -> web.Response:
             raise ApiError(409, "Can't delete the last admin")
     if uid == me_user.id:
         raise ApiError(409, "You can't delete yourself")
+    owned = await e.db.fetchall("SELECT speaker_id FROM speaker_owners WHERE user_id=?", uid)
     await e.db.execute("DELETE FROM users WHERE id=?", uid)
+    e.speakers.owners_changed([r["speaker_id"] for r in owned])
     await e.refresh_ws_users()
     await e.hub.send_all({"type": "users_changed"}, "signed_in")
     return web.json_response({"ok": True})

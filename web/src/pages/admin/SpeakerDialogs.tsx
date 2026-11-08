@@ -72,7 +72,7 @@ export function ShareDialog({ ids, mode, onClose }: { ids: string[]; mode: Share
           </AlertDialog.Title>
           <AlertDialog.Description className="dialog__desc">
             {handover
-              ? "Have the new owner scan this code while signed in. They become an owner and you stop being one."
+              ? "Have the new owner scan this code while signed in. They become an owner and you're removed as one."
               : "Have the other person scan this code while signed in. They become a co-owner alongside you."}
           </AlertDialog.Description>
           {error ? (

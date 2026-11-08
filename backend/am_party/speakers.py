@@ -47,6 +47,9 @@ NOTIFY_DELAY = 0.2
 # Unclaimed speakers nobody has heard from in this long are forgotten.
 PRUNE_AFTER = 30 * 24 * 3600
 PRUNE_EVERY = 6 * 3600
+# Identities are free to make, so keep at most this many unclaimed offline speakers.
+MAX_UNCLAIMED = 300
+MAX_SHARES_PER_USER = 20
 
 
 class SpeakerOutput(Protocol):
@@ -176,6 +179,26 @@ class SpeakerManager:
             LOGGER.info("Forgot %d unclaimed speakers not seen in %d days", n, PRUNE_AFTER // 86400)
         return n
 
+    async def _evict_unclaimed(self) -> None:
+        """Drop the oldest unclaimed offline speakers beyond MAX_UNCLAIMED."""
+        live = list(self._live)
+        sql = (
+            "SELECT id FROM speakers WHERE id NOT IN (SELECT speaker_id FROM speaker_owners)"
+            + (f" AND id NOT IN ({','.join('?' * len(live))})" if live else "")
+            + " ORDER BY COALESCE(last_seen, created_at) DESC LIMIT -1 OFFSET ?"
+        )
+        old = [r["id"] for r in await self.db.fetchall(sql, *live, MAX_UNCLAIMED)]
+        if old:
+            await self.db.execute(
+                f"DELETE FROM speakers WHERE id IN ({','.join('?' * len(old))})", *old
+            )
+
+    def owners_changed(self, speaker_ids: list[str]) -> None:
+        """Owners changed outside this manager (e.g. a user was deleted)."""
+        for sid in speaker_ids:
+            self._changed(sid, device=True)
+        self._changed()
+
     # ------------------------------------------------------------------ notifications
     def _changed(self, speaker_id: str | None = None, *, device: bool = False) -> None:
         """Coalesce change notifications (volume drags report many times a second)."""
@@ -221,10 +244,12 @@ class SpeakerManager:
                     "INSERT INTO speakers(id, client_id, name, created_at, last_seen) VALUES(?,?,?,?,?)",
                     sid, client_id, name, t, t,
                 )
+                await self._evict_unclaimed()
             else:
                 sid = row["id"]
-                # Until a name was chosen deliberately, follow what the device announces.
-                if not row["named"] and _hello_name(hello_name) != row["name"]:
+                # Until a name was chosen deliberately (and unless the owner locked the
+                # speaker's local controls), follow what the device announces.
+                if not row["named"] and not row["locked"] and _hello_name(hello_name) != row["name"]:
                     await self.db.execute(
                         "UPDATE speakers SET name=?, last_seen=? WHERE id=?", _hello_name(hello_name), t, sid
                     )
@@ -258,16 +283,22 @@ class SpeakerManager:
         if self._live.get(sid) is not live:
             return
         async with self._lock:
+            if self._live.get(sid) is not live:
+                return
             row = await self.db.fetchone("SELECT volume, muted FROM speakers WHERE id=?", sid)
             if row is None:
                 return
-            if row["volume"] is None:
-                if state is not None:
+            # re-read: reports handled while waiting for the lock were dropped (not synced yet)
+            state = out.client_player_state(live.client_id)
+            # Only a connection that declared the commands has reported real values; before
+            # that they are the library's defaults (and commands would be dropped).
+            if state is not None and state[2]:
+                if row["volume"] is None:
                     await self.db.execute(
                         "UPDATE speakers SET volume=?, muted=? WHERE id=?", state[0], int(state[1]), sid
                     )
-            elif state is not None:
-                _push(out, live.client_id, (row["volume"], bool(row["muted"])), (state[0], state[1]))
+                else:
+                    _push(out, live.client_id, (row["volume"], bool(row["muted"])), (state[0], state[1]))
             live.synced = True
         self._changed(sid)
 
@@ -528,7 +559,10 @@ class SpeakerManager:
             raise ApiError(400, "mode must be share or handover")
         await self._accessible(user, ids)
         self._prune_shares()
-        if len(self._shares) >= MAX_SHARES:
+        if (
+            len(self._shares) >= MAX_SHARES
+            or sum(sh.by_user_id == user.id for sh in self._shares.values()) >= MAX_SHARES_PER_USER
+        ):
             raise ApiError(429, "Too many open share codes; try again in a few minutes")
         share = Share(
             token=secrets.token_urlsafe(16),
@@ -548,12 +582,33 @@ class SpeakerManager:
             raise ApiError(404, "That share code has expired or was already used")
         return share
 
+    async def _still_shareable(self, share: Share) -> list[str]:
+        """The shared speakers the sharer still controls (they may have been removed since)."""
+        from .auth import User
+
+        row = await self.db.fetchone("SELECT * FROM users WHERE id=?", share.by_user_id)
+        sharer = User.from_row(row) if row else None
+        if sharer is None or not sharer.has("claim_speakers"):
+            return []
+        marks = ",".join("?" * len(share.speaker_ids))
+        if sharer.is_admin:
+            rows = await self.db.fetchall(
+                f"SELECT id FROM speakers WHERE id IN ({marks})", *share.speaker_ids
+            )
+        else:
+            rows = await self.db.fetchall(
+                f"SELECT speaker_id AS id FROM speaker_owners WHERE user_id=? AND speaker_id IN ({marks})",
+                sharer.id, *share.speaker_ids,
+            )
+        return [r["id"] for r in rows]
+
     async def share_preview(self, token: Any) -> dict[str, Any]:
         share = self._share(token)
-        marks = ",".join("?" * len(share.speaker_ids))
-        rows = await self.db.fetchall(
-            f"SELECT id, name FROM speakers WHERE id IN ({marks})", *share.speaker_ids
-        )
+        ids = await self._still_shareable(share)
+        if not ids:
+            raise ApiError(410, "Whoever shared these speakers no longer controls them")
+        marks = ",".join("?" * len(ids))
+        rows = await self.db.fetchall(f"SELECT id, name FROM speakers WHERE id IN ({marks})", *ids)
         speakers = sorted(
             ({"id": r["id"], "name": r["name"], "connected": r["id"] in self._live} for r in rows),
             key=lambda s: s["name"].casefold(),
@@ -564,11 +619,9 @@ class SpeakerManager:
         async with self._lock:
             share = self._share(token)
             del self._shares[share.token]  # single use
-            marks = ",".join("?" * len(share.speaker_ids))
-            rows = await self.db.fetchall(
-                f"SELECT id FROM speakers WHERE id IN ({marks})", *share.speaker_ids
-            )
-            ids = [r["id"] for r in rows]
+            ids = await self._still_shareable(share)
+            if not ids:
+                raise ApiError(410, "Whoever shared these speakers no longer controls them")
             async with self.db.transaction():
                 for sid in ids:
                     await self._add_owner(sid, user.id)

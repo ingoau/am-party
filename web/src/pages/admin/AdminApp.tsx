@@ -124,7 +124,7 @@ export default function AdminApp() {
               <span>{s.label}</span>
             </NavLink>
           ))}
-          <a className="admin__link" href="/tv" target="_blank" rel="noreferrer">
+          <a className="admin__link admin__link--tv" href="/tv" target="_blank" rel="noreferrer">
             <Tv size={20} />
             <span>TV view</span>
           </a>

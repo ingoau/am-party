@@ -618,6 +618,22 @@
   }
 }
 
+/* Six or more tabs don't fit a phone's bottom bar with readable labels: tighten the padding and
+   drop the TV link there (it's a big-screen thing anyway). */
+@media (max-width: 480px) {
+  .admin__nav {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .admin__link {
+    padding: var(--space-1) 2px;
+    font-size: 11px;
+  }
+  .admin__links:has(> .admin__link:nth-child(6)) > .admin__link--tv {
+    display: none;
+  }
+}
+
 /* ---------- Drag-to-reorder (queue) ---------- */
 .queue-item {
   position: relative;

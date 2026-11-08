@@ -206,8 +206,12 @@ def is_configured_admin(config: Config, claims: dict[str, Any]) -> bool:
     return bool(email and email in config.admin_emails and email_verified(claims))
 
 
+# The request page with only a speaker claim code (scan a speaker's QR, sign in, claim it).
+_CLAIM_NEXT = re.compile(r"^speaker=[A-Za-z0-9_-]{1,64}$")
+
+
 def safe_next(value: str | None, default: str = "/admin") -> str:
-    """Only same-origin /admin paths are allowed as post-login redirect targets."""
+    """Only same-origin /admin paths (and ``/?speaker=<code>``) are allowed after login."""
     if not value or len(value) > 512 or not value.startswith("/") or value.startswith("//"):
         return default
     if "\\" in value or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
@@ -215,6 +219,8 @@ def safe_next(value: str | None, default: str = "/admin") -> str:
     parts = urlsplit(value)
     if parts.scheme or parts.netloc:
         return default
+    if parts.path == "/" and not parts.fragment and _CLAIM_NEXT.match(parts.query):
+        return value
     if parts.path != "/admin" and not parts.path.startswith("/admin/"):
         return default
     return value

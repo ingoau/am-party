@@ -153,7 +153,7 @@ Speakers are browsers listening on `/tv` or `/stream`, identified by their Sends
 across reconnects while the browser keeps its storage). Owners are equal co-owners; admins see and
 control every speaker. Volume, mute and the lock are stored and reapplied whenever a speaker
 reconnects; local changes on the device win unless it is locked. Unclaimed speakers offline for 30
-days are forgotten.
+days are forgotten (and only the 300 most recently seen unclaimed ones are kept).
 
 ```ts
 type Speaker = {
@@ -183,7 +183,7 @@ type SpeakerSelf = {
 | DELETE | `/api/speakers/{id}/owners/{user_id}` | any co-owner (or admin) removes any co-owner, yourself = leave → `{speaker \| null}` (null when you lost access) |
 | DELETE | `/api/speakers/{id}` | admin only: forget an offline speaker (409 while connected) |
 | POST | `/api/speakers/share` | `{ids, mode: "share" \| "handover"}` → `{token, expires_at, mode}`; single use, 10 minutes. Link: `${public_url}/admin/speakers?share=${token}` |
-| GET | `/api/speakers/share/{token}` | `{mode, from, expires_at, speakers: {id, name, connected}[]}` |
+| GET | `/api/speakers/share/{token}` | `{mode, from, expires_at, speakers: {id, name, connected}[]}`; only the speakers the sharer still controls (410 if none) |
 | POST | `/api/speakers/share/{token}/accept` | → `{speakers}`; adds you as a co-owner, and for `handover` removes the sharer |
 
 ### `admin`
