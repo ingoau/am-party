@@ -80,6 +80,7 @@ const settings = {
   crossfade_duration: 6,
   max_pending_per_guest: 3,
   request_cooldown_seconds: 30,
+  speaker_naming_notes: "",
 };
 let nowPlaying = { track: TRACKS[Number(process.env.MOCK_NOW_PLAYING ?? 3) % TRACKS.length], queue_item_id: null, source: "fallback", started_at: now() - 61 };
 let paused = false;
@@ -117,6 +118,7 @@ const PERMISSIONS = [
   { id: "queue_remove", label: "Remove from queue", description: "Take songs out of the queue", group: "Queue" },
   { id: "playback_skip", label: "Skip songs", description: "Skip, go back or seek within the current song for every device", group: "Playback" },
   { id: "playback_pause", label: "Pause & resume", description: "Pause and resume playback for every device", group: "Playback" },
+  { id: "claim_speakers", label: "Claim speakers", description: "Claim speakers by scanning their QR code and control the ones you own", group: "Speakers" },
 ];
 const PERM_IDS = PERMISSIONS.map((p) => p.id);
 const cleanPerms = (v) => (Array.isArray(v) ? [...new Set(v.filter((p) => PERM_IDS.includes(p)))].sort() : []);
@@ -158,6 +160,7 @@ function state() {
     paused,
     requests_open: settings.requests_open,
     require_approval: settings.require_approval,
+    speaker_naming_notes: settings.speaker_naming_notes,
     listeners: 4,
   };
 }

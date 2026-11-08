@@ -460,6 +460,110 @@ async def player_action(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# --------------------------------------------------------------------------- speakers
+# Device side: the speaker identifies itself by its Sendspin client_id (its secret), sent
+# in the body so it never ends up in URLs or access logs. No sign-in.
+@routes.post("/api/speaker/self")
+async def speaker_self(request: web.Request) -> web.Response:
+    csrf_check(request)
+    data = await body(request)
+    return web.json_response(await enc(request).speakers.device_view(data.get("client_id")))
+
+
+@routes.post("/api/speaker/self/name")
+async def speaker_self_name(request: web.Request) -> web.Response:
+    csrf_check(request)
+    data = await body(request)
+    return web.json_response(
+        await enc(request).speakers.device_rename(data.get("client_id"), data.get("name"))
+    )
+
+
+async def speaker_owner(request: web.Request) -> Any:
+    return await enc(request).auth.require(request, "claim_speakers")
+
+
+@routes.get("/api/speakers")
+async def speakers_list(request: web.Request) -> web.Response:
+    user = await speaker_owner(request)
+    return web.json_response({"speakers": await enc(request).speakers.list_for(user)})
+
+
+@routes.get("/api/speakers/claim/{token}")
+async def speaker_claim_preview(request: web.Request) -> web.Response:
+    user = await speaker_owner(request)
+    return web.json_response(
+        await enc(request).speakers.claim_preview(user, request.match_info["token"])
+    )
+
+
+@routes.post("/api/speakers/claim")
+async def speaker_claim(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    data = await body(request)
+    return web.json_response({"speaker": await enc(request).speakers.claim(user, data.get("token"))})
+
+
+@routes.post("/api/speakers/control")
+async def speakers_control(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    data = await body(request)
+    return web.json_response({"speakers": await enc(request).speakers.control(user, data)})
+
+
+@routes.post("/api/speakers/share")
+async def speakers_share(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    data = await body(request)
+    return web.json_response(await enc(request).speakers.create_share(user, data))
+
+
+@routes.get("/api/speakers/share/{token}")
+async def speakers_share_preview(request: web.Request) -> web.Response:
+    await speaker_owner(request)
+    return web.json_response(
+        await enc(request).speakers.share_preview(request.match_info["token"])
+    )
+
+
+@routes.post("/api/speakers/share/{token}/accept")
+async def speakers_share_accept(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    speakers = await enc(request).speakers.accept_share(user, request.match_info["token"])
+    return web.json_response({"speakers": speakers})
+
+
+@routes.patch("/api/speakers/{id}")
+async def speaker_update(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    data = await body(request)
+    speaker = await enc(request).speakers.update(user, request.match_info["id"], data)
+    return web.json_response({"speaker": speaker})
+
+
+@routes.delete("/api/speakers/{id}/owners/{user_id}")
+async def speaker_remove_owner(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    speaker = await enc(request).speakers.remove_owner(
+        user, request.match_info["id"], int_param(request, "user_id")
+    )
+    return web.json_response({"speaker": speaker})
+
+
+@routes.delete("/api/speakers/{id}")
+async def speaker_forget(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    await enc(request).speakers.forget(user, request.match_info["id"])
+    return web.json_response({"ok": True})
+
+
 # --------------------------------------------------------------------------- admins
 @routes.get("/api/admin/permissions")
 async def permission_catalog(request: web.Request) -> web.Response:

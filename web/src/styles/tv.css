@@ -478,6 +478,10 @@
   background: rgba(40, 40, 48, 0.85);
   border-color: rgba(255, 255, 255, 0.3);
 }
+.tv-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .tv-btn:focus-visible {
   outline: 3px solid var(--text);
   outline-offset: 3px;

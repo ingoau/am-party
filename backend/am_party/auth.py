@@ -75,6 +75,11 @@ PERMISSIONS: dict[str, dict[str, str]] = {
         "description": "Pause and resume playback for every device",
         "group": "Playback",
     },
+    "claim_speakers": {
+        "label": "Claim speakers",
+        "description": "Claim speakers by scanning their QR code and control the ones you own",
+        "group": "Speakers",
+    },
 }
 ADMIN = "admin"
 # what the old can_* columns map to (migration)

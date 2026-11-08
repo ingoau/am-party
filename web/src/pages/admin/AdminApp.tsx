@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Navigate, NavLink, Route, Routes } from "react-router";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router";
 import { api, ApiError } from "../../api/client";
 import type { Me, User } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
-import { Inbox, ListMusic, LogOut, Settings, Tv, Users } from "lucide-react";
+import { Inbox, ListMusic, LogOut, Settings, Speaker, Tv, Users } from "lucide-react";
 import { Toaster } from "../../components/Toaster";
 import { RequestsTab } from "./RequestsTab";
 import { QueueTab } from "./QueueTab";
 import { UsersTab } from "./UsersTab";
 import { SettingsTab } from "./SettingsTab";
+import { SpeakersTab } from "./SpeakersTab";
 import { can, canQueueTab } from "./permissions";
 import "../../styles/admin.css";
 
@@ -18,6 +19,7 @@ type Section = { path: string; label: string; icon: ReactNode; allowed: (u: User
 const SECTIONS: Section[] = [
   { path: "requests", label: "Requests", icon: <Inbox size={20} />, allowed: (u) => can(u, "approve_requests") },
   { path: "queue", label: "Queue", icon: <ListMusic size={20} />, allowed: canQueueTab },
+  { path: "speakers", label: "Speakers", icon: <Speaker size={20} />, allowed: (u) => can(u, "claim_speakers") },
   { path: "users", label: "People", icon: <Users size={20} />, allowed: (u) => u.is_admin },
   { path: "settings", label: "Settings", icon: <Settings size={20} />, allowed: (u) => u.is_admin },
 ];
@@ -26,6 +28,7 @@ export default function AdminApp() {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { state } = useLive();
+  const location = useLocation();
 
   const load = useCallback(() => {
     api
@@ -65,7 +68,7 @@ export default function AdminApp() {
         body={me.oidc_enabled ? "Hosts sign in to approve requests and run the queue." : "Sign-in isn't configured on this server. Set up OIDC to use the host panel."}
       >
         {me.oidc_enabled && (
-          <a className="btn btn--primary btn--lg" href={`/auth/login?next=${encodeURIComponent("/admin")}`}>
+          <a className="btn btn--primary btn--lg" href={`/auth/login?next=${encodeURIComponent(location.pathname.startsWith("/admin") ? location.pathname + location.search : "/admin")}`}>
             Sign in with {me.oidc_name || "SSO"}
           </a>
         )}
@@ -78,6 +81,20 @@ export default function AdminApp() {
 
   const user = me.user;
   const allowed = SECTIONS.filter((s) => s.allowed(user));
+
+  // A speaker share link (/admin/speakers?share=…) for someone who can't hold speakers.
+  if (new URLSearchParams(location.search).has("share") && !can(user, "claim_speakers")) {
+    return (
+      <Gate
+        title="Can't accept these speakers"
+        body={`You're signed in as ${user.name}, who isn't allowed to claim speakers. Ask an admin for the “Claim speakers” permission, then open the link again. This page updates on its own.`}
+      >
+        <a className="btn btn--ghost" href="/">
+          Back to the party
+        </a>
+      </Gate>
+    );
+  }
 
   if (allowed.length === 0) {
     return (
@@ -133,6 +150,7 @@ export default function AdminApp() {
           <Route index element={<Navigate to={`/admin/${allowed[0].path}`} replace />} />
           {can(user, "approve_requests") && <Route path="requests/*" element={<RequestsTab />} />}
           {canQueueTab(user) && <Route path="queue" element={<QueueTab me={user} />} />}
+          {can(user, "claim_speakers") && <Route path="speakers" element={<SpeakersTab me={user} />} />}
           {user.is_admin && <Route path="users" element={<UsersTab me={user} />} />}
           {user.is_admin && <Route path="settings" element={<SettingsTab />} />}
           <Route path="*" element={<Navigate to={`/admin/${allowed[0].path}`} replace />} />

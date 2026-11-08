@@ -9,6 +9,7 @@ import { DeviceSettingsForm, syncLabel, type Sendspin } from "../components/Devi
 import { LiveProgress } from "../components/ProgressBar";
 import { LazyToaster } from "../components/lazyToast";
 import { QrCode } from "../components/QrCode";
+import { useListenWithNaming } from "../components/NameSpeakerDialog";
 import { Headphones, Music, Pause, Settings, Volume2, VolumeX, WifiOff } from "lucide-react";
 import type { QueueItem, Track } from "../api/types";
 import { TV_TEXT_DEFAULTS, artworkAt, cx } from "../util";
@@ -46,13 +47,17 @@ export function TvPage() {
   const base = (state?.public_url || location.origin).replace(/\/+$/, "");
   const host = hostOf(base);
   const requestsOpen = state?.requests_open !== false;
+  // While this TV is a connected speaker, the request QR doubles as its claim code: guests just
+  // land on the request page; people who may claim speakers get offered this one.
+  const qrUrl = sp.claimToken ? `${base}/?speaker=${encodeURIComponent(sp.claimToken)}` : base;
+  const { listen, naming, dialog: namingDialog } = useListenWithNaming(sp, state?.speaker_naming_notes ?? "");
 
   const [intro, setIntro] = useState(true);
   useEffect(() => {
     const t = window.setTimeout(() => setIntro(false), INTRO_MS);
     return () => window.clearTimeout(t);
   }, []);
-  const controlsShown = !controlsOff && (!idle || intro || settingsOpen);
+  const controlsShown = !controlsOff && (!idle || intro || settingsOpen || naming);
   const [armed, setArmed] = useState(controlsShown);
 
   useEffect(() => {
@@ -65,17 +70,17 @@ export function TvPage() {
 
   const toggleListen = () => {
     if (sp.status.listening) sp.stop();
-    else sp.start();
+    else listen();
   };
 
   // Remote / keyboard (works while the controls are hidden): Enter/Space toggles listening,
   // M mutes, ↑/↓ volume.
-  const kb = useRef({ toggleListen, sp, controlsOff, settingsOpen });
-  kb.current = { toggleListen, sp, controlsOff, settingsOpen };
+  const kb = useRef({ toggleListen, sp, controlsOff, settingsOpen, naming });
+  kb.current = { toggleListen, sp, controlsOff, settingsOpen, naming };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { toggleListen, sp, controlsOff, settingsOpen } = kb.current;
-      if (settingsOpen || controlsOff || e.altKey || e.ctrlKey || e.metaKey) return;
+      const { toggleListen, sp, controlsOff, settingsOpen, naming } = kb.current;
+      if (settingsOpen || naming || controlsOff || e.altKey || e.ctrlKey || e.metaKey) return;
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
@@ -84,6 +89,8 @@ export function TvPage() {
       if (e.key === "Enter" || e.key === " " || e.key === "MediaPlayPause") {
         e.preventDefault();
         toggleListen();
+      } else if (sp.locked) {
+        // Volume and mute are controlled by the speaker's owner.
       } else if (e.key === "m" || e.key === "M") {
         sp.setMuted(!sp.muted);
       } else if (e.key === "ArrowUp" || e.key === "AudioVolumeUp") {
@@ -157,7 +164,7 @@ export function TvPage() {
           </section>
 
           <aside className="tv__panel" aria-label="Coming up">
-            <RequestCta url={base} host={host} open={requestsOpen} text={ctaText} pausedText={pausedText} />
+            <RequestCta url={qrUrl} host={host} open={requestsOpen} text={ctaText} pausedText={pausedText} />
             <div className="tv__divider" aria-hidden />
             <ComingUp upcoming={state!.upcoming} fallback={state!.up_next_fallback} stacked={stacked} emptyText={emptyText} />
           </aside>
@@ -173,7 +180,7 @@ export function TvPage() {
                 </p>
                 {requestsOpen && (
                   <Link to="/" className="tv__idle-qr" aria-label="Request a song">
-                    <QrCode text={base} className="tv__qr-code" label="QR code: request a song" />
+                    <QrCode text={qrUrl} className="tv__qr-code" label="QR code: request a song" />
                     <span className="tv__host">{host}</span>
                   </Link>
                 )}
@@ -228,9 +235,10 @@ export function TvPage() {
                 type="button"
                 className={cx("tv-btn", sp.muted && "is-muted")}
                 onClick={() => sp.setMuted(!sp.muted)}
+                disabled={sp.locked}
                 aria-label={sp.muted ? "Unmute this device" : "Mute this device"}
                 aria-pressed={sp.muted}
-                title={sp.muted ? "Unmute (M)" : "Mute (M)"}
+                title={sp.locked ? "Controlled by the speaker's owner" : sp.muted ? "Unmute (M)" : "Mute (M)"}
               >
                 {sp.muted || sp.volume === 0 ? <VolumeX size={22} /> : <Volume2 size={22} />}
               </button>
@@ -241,6 +249,7 @@ export function TvPage() {
           </div>
         )}
       </footer>
+      {namingDialog}
       <Suspense fallback={null}>
         <LazyToaster />
       </Suspense>

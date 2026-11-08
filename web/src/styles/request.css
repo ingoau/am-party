@@ -161,3 +161,46 @@
 .req .hint {
   font-size: var(--fs-2);
 }
+
+/* ---------- ?speaker=<token>: claim a speaker from its QR ---------- */
+.claim {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.claim__icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.claim__body {
+  flex: 1;
+  min-width: 0;
+}
+.claim__text {
+  margin: 0;
+  font-size: var(--fs-2);
+  overflow-wrap: anywhere;
+}
+.claim__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.claim__close {
+  margin: -6px -4px 0 0;
+}
+.claim-signin {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-1);
+  color: var(--muted);
+}
+.claim-signin a {
+  color: var(--muted);
+  text-decoration: underline;
+}

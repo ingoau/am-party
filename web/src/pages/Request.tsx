@@ -8,6 +8,7 @@ import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { Artwork } from "../components/Artwork";
 import { LiveProgress } from "../components/ProgressBar";
 import { TrackRow } from "../components/TrackRow";
+import { SpeakerClaim } from "../components/SpeakerClaim";
 import { Search, X } from "lucide-react";
 import { LazyToaster, lazyToast as toast } from "../components/lazyToast";
 import { artworkAt, cx } from "../util";
@@ -183,6 +184,8 @@ export function RequestPage() {
       <header className="req__header">
         <h1 className="req__party">{state?.party_name || "am-party"}</h1>
       </header>
+
+      <SpeakerClaim />
 
       {np && (
         <div className="req-np">

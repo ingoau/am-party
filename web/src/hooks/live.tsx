@@ -4,8 +4,10 @@ import type { State, WsMessage } from "../api/types";
 
 export type ConnStatus = "connecting" | "live" | "polling" | "offline";
 
-type LiveEvent = "requests_changed" | "users_changed";
-type Listener = () => void;
+/** Socket pushes components can subscribe to (everything except state / pong). */
+export type LiveEvent = "requests_changed" | "users_changed" | "speakers_changed" | "speaker_changed";
+export type LiveMessage<E extends LiveEvent = LiveEvent> = Extract<WsMessage, { type: E }>;
+type Listener = (msg: LiveMessage) => void;
 
 type LiveCtx = {
   state: State | null;
@@ -14,7 +16,7 @@ type LiveCtx = {
   status: ConnStatus;
   /** Local timestamp (ms) at which `state` was received. */
   receivedAt: number;
-  subscribe: (ev: LiveEvent, fn: Listener) => () => void;
+  subscribe: <E extends LiveEvent>(ev: E, fn: (msg: LiveMessage<E>) => void) => () => void;
   refresh: () => void;
 };
 
@@ -80,7 +82,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       ws.send(JSON.stringify({ type: "ping" }));
     };
 
-    const emit = (ev: LiveEvent) => listeners.current.get(ev)?.forEach((fn) => fn());
+    const emit = (msg: LiveMessage) => listeners.current.get(msg.type)?.forEach((fn) => fn(msg));
 
     const poll = async () => {
       const t0 = Date.now();
@@ -140,7 +142,13 @@ export function LiveProvider({ children }: { children: ReactNode }) {
           if (pingSentAt !== null && typeof msg.server_time === "number") sampleClock(msg.server_time, pingSentAt, t - pingSentAt);
           pingSentAt = null;
         }
-        else if (msg.type === "requests_changed" || msg.type === "users_changed") emit(msg.type);
+        else if (
+          msg.type === "requests_changed" ||
+          msg.type === "users_changed" ||
+          msg.type === "speakers_changed" ||
+          msg.type === "speaker_changed"
+        )
+          emit(msg);
       };
       ws.onclose = () => {
         if (pingTimer !== undefined) window.clearInterval(pingTimer);
@@ -189,12 +197,13 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const subscribe = useCallback((ev: LiveEvent, fn: Listener) => {
+  const subscribe = useCallback(<E extends LiveEvent>(ev: E, fn: (msg: LiveMessage<E>) => void) => {
     let set = listeners.current.get(ev);
     if (!set) listeners.current.set(ev, (set = new Set()));
-    set.add(fn);
+    const l = fn as Listener;
+    set.add(l);
     return () => {
-      set!.delete(fn);
+      set!.delete(l);
     };
   }, []);
   const refresh = useCallback(() => refreshRef.current(), []);
@@ -213,10 +222,10 @@ export function useLive(): LiveCtx {
   return c;
 }
 
-/** Run `fn` whenever the server pushes `ev` over the socket. */
-export function useLiveEvent(ev: LiveEvent, fn: () => void) {
+/** Run `fn` whenever the server pushes `ev` over the socket (it gets the message, e.g. speaker_changed's id). */
+export function useLiveEvent<E extends LiveEvent>(ev: E, fn: (msg: LiveMessage<E>) => void) {
   const { subscribe } = useLive();
   const ref = useRef(fn);
   ref.current = fn;
-  useEffect(() => subscribe(ev, () => ref.current()), [subscribe, ev]);
+  useEffect(() => subscribe(ev, (msg) => ref.current(msg)), [subscribe, ev]);
 }

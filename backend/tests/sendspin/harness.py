@@ -56,10 +56,16 @@ class ClientRecord:
     groups: list[object] = field(default_factory=list)
 
 
-async def make_client(name: str, url: str, session: aiohttp.ClientSession) -> ClientRecord:
+async def make_client(
+    name: str,
+    url: str,
+    session: aiohttp.ClientSession,
+    identity: Identity | None = None,
+    commands: list[object] | None = None,
+) -> ClientRecord:
     store = InMemoryClientPairingStore()
     client = RefClient(
-        Identity.generate(),
+        identity or Identity.generate(),
         name,
         [Roles.PLAYER, Roles.METADATA, Roles.CONTROLLER],
         pairing_store=store,
@@ -73,6 +79,7 @@ async def make_client(name: str, url: str, session: aiohttp.ClientSession) -> Cl
             buffer_capacity=4_000_000,
         ),
         session=session,
+        state_supported_commands=commands,  # type: ignore[arg-type]
     )
     await client.set_unpaired_access(enabled=True)
     rec = ClientRecord(name, client)

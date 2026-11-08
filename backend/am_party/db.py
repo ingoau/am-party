@@ -82,6 +82,28 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Browsers that have listened via Sendspin. client_id is the device's Sendspin identity
+-- (its public key) and is only ever sent by the device itself; APIs use the opaque id.
+CREATE TABLE IF NOT EXISTS speakers (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    named INTEGER NOT NULL DEFAULT 0,
+    volume INTEGER,
+    muted INTEGER NOT NULL DEFAULT 0,
+    locked INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    last_seen REAL
+);
+
+CREATE TABLE IF NOT EXISTS speaker_owners (
+    speaker_id TEXT NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    added_at REAL NOT NULL,
+    PRIMARY KEY (speaker_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_speaker_owners_user ON speaker_owners(user_id);
 """
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -99,6 +121,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "tv_cta_text": "",
     "tv_paused_text": "",
     "tv_empty_text": "",
+    # Shown to whoever names a new speaker (naming conventions etc.); "" = none.
+    "speaker_naming_notes": "",
 }
 
 

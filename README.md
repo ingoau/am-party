@@ -8,6 +8,7 @@ A self-hosted party jukebox. Any device opens the page and plays the party music
 - `/tv` — TV / listening screen: now playing, up next, QR code, listen toggle, mute and volume per device
 - `/stream` — listen-only page: connect a device (phone, laptop, speaker box) to the audio stream without the TV screen
 - `/admin` — sign in with your OIDC provider. The **first user to sign in becomes admin**; everyone after that has no privileges until an admin grants them (approve requests, manage queue, admin)
+- `/admin/speakers` — speakers: people with the **Claim speakers** permission scan the QR code on a listening TV (or "Claim this speaker" on `/stream`) to claim it, then mute it, set its volume, lock its local controls, rename it, and share or hand it over to others; admins see and control every speaker
 
 ## How it works
 

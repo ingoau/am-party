@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
-import type { SendspinStatus, useSendspin } from "../hooks/useSendspin";
+import { LOCKED_NOTE, type SendspinStatus, type useSendspin } from "../hooks/useSendspin";
+import { Lock } from "lucide-react";
 import { fmtBitrate, fmtBytes, useSendspinTraffic } from "../hooks/sendspinTraffic";
 
 export type Sendspin = ReturnType<typeof useSendspin>;
@@ -40,7 +41,7 @@ export function DeviceSettingsForm({
   idPrefix: string;
   commitRef?: MutableRefObject<() => void>;
 }) {
-  const { deviceName, setDeviceName, renamePending, volume, setVolume, muted, syncDelay, setSyncDelay, status } = sp;
+  const { deviceName, setDeviceName, renamePending, volume, setVolume, muted, syncDelay, setSyncDelay, status, locked } = sp;
   const [name, setName] = useState(deviceName);
   const [delay, setDelay] = useState(String(syncDelay));
   const traffic = useSendspinTraffic(status.listening);
@@ -48,7 +49,7 @@ export function DeviceSettingsForm({
   const commitName = useRef(() => {});
   useEffect(() => {
     commitName.current = () => {
-      if (name.trim() && name.trim() !== deviceName) setDeviceName(name);
+      if (!locked && name.trim() && name.trim() !== deviceName) setDeviceName(name);
       // A blank (or unchanged) name isn't saved: show the current one again.
       else setName(deviceName);
     };
@@ -72,6 +73,11 @@ export function DeviceSettingsForm({
         commitName.current();
       }}
     >
+      {locked && (
+        <p className="field__hint device-locked" role="status">
+          <Lock size={14} aria-hidden /> {LOCKED_NOTE}
+        </p>
+      )}
       <div className="field">
         <span className="field__label" id={volLabel}>
           Volume
@@ -85,6 +91,7 @@ export function DeviceSettingsForm({
           value={muted ? 0 : volume}
           onChange={(e) => setVolume(Number(e.target.value))}
           aria-labelledby={volLabel}
+          disabled={locked}
           className="range"
           style={{ ["--val" as string]: `${muted ? 0 : volume}%` }}
         />
@@ -96,10 +103,11 @@ export function DeviceSettingsForm({
           value={name}
           onChange={(e) => setName(e.target.value)}
           onBlur={() => commitName.current()}
-          maxLength={60}
+          disabled={locked}
+          maxLength={40}
           enterKeyHint="done"
         />
-        {renamePending && <span className="field__hint">The new name shows up next time you tap Listen.</span>}
+        {renamePending && !locked && <span className="field__hint">The new name shows up next time you tap Listen.</span>}
       </label>
       <label className="field">
         <span className="field__label">Speaker delay (ms)</span>
