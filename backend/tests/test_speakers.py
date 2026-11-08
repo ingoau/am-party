@@ -416,3 +416,42 @@ async def test_unclaimed_speakers_are_capped(env: Any, monkeypatch: pytest.Monke
         await disconnect(mgr, out, cid)
     names = sorted(s["name"] for s in await mgr.list_for(user(9, admin=True)))
     assert names == ["Claimed", "S2", "S3"]
+
+
+@pytest.mark.asyncio
+async def test_admin_assigns_speakers(env: Any) -> None:
+    mgr, out, hub = env
+    a = await connect(mgr, out, CID_A, "A")
+    b = await connect(mgr, out, CID_B, "B")
+    admin = user(9, admin=True)
+    ids = [a["id"], b["id"]]
+    # only admins
+    with pytest.raises(ApiError) as err:
+        await mgr.assign(user(1), {"ids": ids, "user_id": 1})
+    assert err.value.status == 403
+    for bad, status in (
+        ({"ids": ids, "user_id": "1"}, 400),
+        ({"ids": ids, "user_id": True}, 400),
+        ({"ids": [], "user_id": 1}, 400),
+        ({"ids": ids, "user_id": 404}, 404),
+        ({"ids": [a["id"], "nope"], "user_id": 1}, 404),
+    ):
+        with pytest.raises(ApiError) as err:
+            await mgr.assign(admin, bad)
+        assert err.value.status == status
+    assert all(not s["owners"] for s in await mgr.list_for(admin))
+
+    # claim without scanning: assign to yourself
+    views = await mgr.assign(admin, {"ids": [a["id"]], "user_id": 9})
+    assert [(v["id"], v["mine"]) for v in views] == [(a["id"], True)]
+    # assign to another user, idempotently
+    hub.sent.clear()
+    views = await mgr.assign(admin, {"ids": ids, "user_id": 1})
+    views = await mgr.assign(admin, {"ids": ids, "user_id": 1})
+    owners = {v["id"]: [o["id"] for o in v["owners"]] for v in views}
+    assert owners == {a["id"]: [9, 1], b["id"]: [1]}
+    assert {s["id"] for s in await mgr.list_for(user(1))} == set(ids)
+    assert (await mgr.device_view(CID_B))["claimed"]
+    await settle()
+    assert ({"type": "speakers_changed"}, "claim_speakers") in hub.sent
+    assert ({"type": "speaker_changed", "id": b["id"]}, None) in hub.sent

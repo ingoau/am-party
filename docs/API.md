@@ -151,7 +151,8 @@ Each endpoint needs the permission shown (admins have all). 401 if signed out, 4
 
 Speakers are browsers listening on `/tv` or `/stream`, identified by their Sendspin identity (stable
 across reconnects while the browser keeps its storage). Owners are equal co-owners; admins see and
-control every speaker. Volume, mute and the lock are stored and reapplied whenever a speaker
+control every speaker and can assign any speaker to any user (the admin UI shows only the admin's own
+speakers until "All speakers" is switched on). Volume, mute and the lock are stored and reapplied whenever a speaker
 reconnects; local changes on the device win unless it is locked. Unclaimed speakers offline for 30
 days are forgotten (and only the 300 most recently seen unclaimed ones are kept).
 
@@ -178,6 +179,7 @@ type SpeakerSelf = {
 | GET | `/api/speakers` | `{speakers: Speaker[]}`: your speakers (admins: all), connected first |
 | GET | `/api/speakers/claim/{token}` | `{speaker: {id, name, connected}, already_mine}`; 404 if the code is stale |
 | POST | `/api/speakers/claim` | `{token}` → `{speaker}`; joins as a co-owner |
+| POST | `/api/speakers/assign` | admin only: `{ids, user_id}` → `{speakers}`; makes that user (any user; yourself = claim without scanning) a co-owner of each speaker; max 200 ids |
 | PATCH | `/api/speakers/{id}` | `{name?, locked?}` → `{speaker}` |
 | POST | `/api/speakers/control` | `{ids, volume? \| volume_delta?, muted?, locked?}` → `{speakers}`; `volume` sets every one to that level, `volume_delta` (-100..100) moves each by the same step; max 200 ids |
 | DELETE | `/api/speakers/{id}/owners/{user_id}` | any co-owner (or admin) removes any co-owner, yourself = leave → `{speaker \| null}` (null when you lost access) |

@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { Copy } from "lucide-react";
+import { Copy, Search } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { ShareMode, Speaker, SpeakerShare, SpeakerSharePreview } from "../../api/types";
+import type { ShareMode, Speaker, SpeakerShare, SpeakerSharePreview, User } from "../../api/types";
 import { QrCode } from "../../components/QrCode";
-import { useLive } from "../../hooks/live";
+import { useLive, useLiveEvent } from "../../hooks/live";
 import { errorText, flash } from "./common";
 
 const plural = (n: number) => `${n} speaker${n === 1 ? "" : "s"}`;
@@ -179,6 +179,120 @@ export function AcceptShareDialog({
             <button type="button" className="btn btn--primary" disabled={busy} onClick={accept}>
               {busy ? "Accepting…" : "Accept"}
             </button>
+          </div>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
+  );
+}
+
+/**
+ * Admin only: pick a user to become a co-owner of `ids` (existing owners stay). Users without
+ * "Claim speakers" are listed too, but flagged: they can't open the Speakers page.
+ */
+export function AssignDialog({
+  ids,
+  me,
+  onClose,
+}: {
+  ids: string[];
+  me: User;
+  /** `speakers` once assigned. */
+  onClose: (speakers?: Speaker[]) => void;
+}) {
+  const [users, setUsers] = useState<User[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Refetched when users change (e.g. one is deleted while the dialog is open).
+  const [usersRev, setUsersRev] = useState(0);
+  useLiveEvent("users_changed", () => setUsersRev((n) => n + 1));
+  useEffect(() => {
+    let alive = true;
+    api.users().then(
+      (r) => alive && setUsers(r.users),
+      (e) => alive && setError(errorText(e)),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [usersRev]);
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase();
+    const label = (u: User) => u.name || u.email || "";
+    return (users ?? [])
+      .filter((u) => !q || label(u).toLocaleLowerCase().includes(q) || (u.email ?? "").toLocaleLowerCase().includes(q))
+      // you first, then people who can open Speakers, then everyone else
+      .sort(
+        (a, b) =>
+          Number(b.id === me.id) - Number(a.id === me.id) ||
+          Number(b.permissions.includes("claim_speakers")) - Number(a.permissions.includes("claim_speakers")) ||
+          label(a).localeCompare(label(b)),
+      );
+  }, [users, query, me.id]);
+
+  const assign = async (u: User) => {
+    setBusy(true);
+    try {
+      const r = await api.assignSpeakers(ids, u.id);
+      flash.ok(u.id === me.id ? `Claimed ${plural(ids.length)}` : `Assigned ${plural(ids.length)} to ${u.name || u.email}`);
+      onClose(r.speakers);
+    } catch (e) {
+      flash.err(e);
+      setBusy(false);
+      if (e instanceof ApiError && e.status === 404) setUsersRev((n) => n + 1);
+    }
+  };
+
+  return (
+    <AlertDialog.Root open onOpenChange={(o) => !o && !busy && onClose()}>
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="dialog-overlay" />
+        <AlertDialog.Content className="dialog assign-dialog">
+          <AlertDialog.Title className="dialog__title">Assign {plural(ids.length)}</AlertDialog.Title>
+          <AlertDialog.Description className="dialog__desc">
+            They become a co-owner and can control {ids.length === 1 ? "it" : "them"}. Existing owners stay.
+          </AlertDialog.Description>
+          {error ? (
+            <p className="field__error">{error}</p>
+          ) : users === null ? (
+            <div className="spinner" />
+          ) : (
+            <>
+              <label className="assign-dialog__search">
+                <Search size={16} aria-hidden />
+                <input
+                  className="input"
+                  type="search"
+                  placeholder="Search people"
+                  aria-label="Search people"
+                  value={query}
+                  autoFocus
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </label>
+              <ul className="assign-list" aria-label="People">
+                {shown.length === 0 && <li className="muted assign-list__empty">Nobody matches “{query.trim()}”</li>}
+                {shown.map((u) => (
+                  <li key={u.id}>
+                    <button type="button" className="assign-list__btn" disabled={busy} onClick={() => void assign(u)}>
+                      <span className="truncate">
+                        {u.name || u.email}
+                        {u.id === me.id && " (you)"}
+                      </span>
+                      {!u.permissions.includes("claim_speakers") && <span className="muted assign-list__note">Can't open Speakers</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          <div className="dialog__actions">
+            <AlertDialog.Cancel className="btn btn--ghost" disabled={busy}>
+              Cancel
+            </AlertDialog.Cancel>
           </div>
         </AlertDialog.Content>
       </AlertDialog.Portal>

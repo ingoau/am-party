@@ -543,6 +543,14 @@ async def speakers_share_accept(request: web.Request) -> web.Response:
     return web.json_response({"speakers": speakers})
 
 
+@routes.post("/api/speakers/assign")
+async def speakers_assign(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    data = await body(request)
+    return web.json_response({"speakers": await enc(request).speakers.assign(user, data)})
+
+
 @routes.patch("/api/speakers/{id}")
 async def speaker_update(request: web.Request) -> web.Response:
     csrf_check(request)
@@ -695,8 +703,10 @@ async def delete_user(request: web.Request) -> web.Response:
             raise ApiError(409, "Can't delete the last admin")
     if uid == me_user.id:
         raise ApiError(409, "You can't delete yourself")
-    owned = await e.db.fetchall("SELECT speaker_id FROM speaker_owners WHERE user_id=?", uid)
-    await e.db.execute("DELETE FROM users WHERE id=?", uid)
+    # One transaction, so a claim/assign can't slip in between and be cascaded away unnoticed.
+    async with e.db.transaction():
+        owned = await e.db.fetchall("SELECT speaker_id FROM speaker_owners WHERE user_id=?", uid)
+        await e.db.execute("DELETE FROM users WHERE id=?", uid)
     e.speakers.owners_changed([r["speaker_id"] for r in owned])
     await e.refresh_ws_users()
     await e.hub.send_all({"type": "users_changed"}, "signed_in")

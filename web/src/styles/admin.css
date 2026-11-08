@@ -1265,7 +1265,10 @@
   color: var(--err);
   background: rgba(240, 96, 109, 0.1);
 }
-.srow__forget {
+.srow__admin {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
   margin-left: auto;
 }
 .sbulk__volume {
@@ -1340,6 +1343,67 @@
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-2);
 }
+
+.assign-dialog__search {
+  position: relative;
+  display: block;
+  margin-bottom: var(--space-3);
+}
+.assign-dialog__search svg {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+.assign-dialog__search .input {
+  width: 100%;
+  padding-left: calc(var(--space-3) * 2 + 16px);
+}
+.assign-list {
+  list-style: none;
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+.assign-list li {
+  border-bottom: 1px solid var(--border);
+}
+.assign-list__empty {
+  padding: var(--space-3) 0;
+  font-size: var(--fs-2);
+}
+.assign-list__btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-2);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-2);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.assign-list__btn:hover:not(:disabled),
+.assign-list__btn:focus-visible {
+  background: var(--surface-2);
+}
+.assign-list__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.assign-list__note {
+  flex: none;
+  font-size: var(--fs-1);
 
 /* Claim speakers: QR scanner */
 .scan-dialog__view {

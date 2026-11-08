@@ -105,6 +105,9 @@ export const api = {
   controlSpeakers: (body: SpeakerControl) => request<{ speakers: Speaker[] }>("POST", "/api/speakers/control", body),
   removeSpeakerOwner: (id: string, userId: number) =>
     request<{ speaker: Speaker | null }>("DELETE", `/api/speakers/${enc(id)}/owners/${userId}`),
+  /** Admin only: make that user (yourself = claim) a co-owner of every one of `ids`. */
+  assignSpeakers: (ids: string[], userId: number) =>
+    request<{ speakers: Speaker[] }>("POST", "/api/speakers/assign", { ids, user_id: userId }),
   forgetSpeaker: (id: string) => command("DELETE", `/api/speakers/${enc(id)}`),
   shareSpeakers: (ids: string[], mode: ShareMode) => request<SpeakerShare>("POST", "/api/speakers/share", { ids, mode }),
   sharePreview: (token: string) => request<SpeakerSharePreview>("GET", `/api/speakers/share/${enc(token)}`),
