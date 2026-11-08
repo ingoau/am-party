@@ -78,7 +78,7 @@ export function UsersTab({ me }: { me: User }) {
     void mutate(() => api.bulkUsers({ user_ids: [u.id], ...(on ? { add: [p] } : { remove: [p] }) }));
   };
 
-  /** One-tap role for someone waiting for access. */
+  /** One-tap access for someone waiting for it. */
   const grantPreset = (u: User, preset: Preset) => {
     patchLocal(u.id, (x) => {
       const granted = [...new Set([...x.granted, ...preset.permissions])];
@@ -86,7 +86,7 @@ export function UsersTab({ me }: { me: User }) {
     });
     void mutate(
       () => api.bulkUsers({ user_ids: [u.id], add: [...preset.permissions] }),
-      `${u.name} is now ${preset.id === "approver" ? "an" : "a"} ${preset.label}`,
+      `${u.name} approved`,
     );
   };
 
@@ -341,11 +341,9 @@ function UserRow({
       </div>
       {waiting && (
         <div className="urow__quick">
-          {PRESETS.map((p) => (
-            <button key={p.id} type="button" className="btn btn--sm" onClick={() => onPreset(p)} title={p.description}>
-              Make {p.label}
-            </button>
-          ))}
+          <button type="button" className="btn btn--sm" onClick={() => onPreset(PRESETS[0])} title={PRESETS[0].description} aria-label={`Approve ${u.name}`}>
+            Approve
+          </button>
         </div>
       )}
       <button
