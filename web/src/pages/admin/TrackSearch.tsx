@@ -60,7 +60,7 @@ export function TrackSearch({ actions, placeholder }: { actions: (t: Track) => R
       {results && results.length > 0 && (
         <div className="list list--scroll">
           {results.map((t) => (
-            <TrackRow key={t.id} track={t} actions={actions(t)} />
+            <TrackRow showExplicit key={t.id} track={t} actions={actions(t)} />
           ))}
         </div>
       )}

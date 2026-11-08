@@ -274,6 +274,7 @@ export function QueueTab({ me }: { me: User }) {
                     <SortableQueueRow key={q.id} item={q} disabled={busy || !canReorder}>
                       {(handle) => (
                         <TrackRow
+                          showExplicit
                           track={q.track}
                           index={i + 1}
                           className="card-row"
@@ -313,7 +314,7 @@ export function QueueTab({ me }: { me: User }) {
           )}
           {upcoming.length > 0 && state?.up_next_fallback && (
             <div className="queue-fallback">
-              <TrackRow track={state.up_next_fallback} dim className="card-row" meta={<span className="muted">Then from the fallback playlist</span>} />
+              <TrackRow showExplicit track={state.up_next_fallback} dim className="card-row" meta={<span className="muted">Then from the fallback playlist</span>} />
             </div>
           )}
         </section>

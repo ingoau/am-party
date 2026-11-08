@@ -9,7 +9,7 @@ import { fmtBitrate, fmtBytes, useSendspinTraffic } from "../hooks/sendspinTraff
 import { LiveProgress } from "../components/ProgressBar";
 import { LazyToaster } from "../components/lazyToast";
 import { QrCode } from "../components/QrCode";
-import { Headphones, Music, Pause, Settings, SquareLetterE, Volume2, VolumeX, WifiOff } from "lucide-react";
+import { Headphones, Music, Pause, Settings, Volume2, VolumeX, WifiOff } from "lucide-react";
 import type { QueueItem, Track } from "../api/types";
 import { TV_TEXT_DEFAULTS, artworkAt, cx } from "../util";
 import "../styles/tv.css";
@@ -150,7 +150,6 @@ export function TvPage() {
             </div>
             <h1 className={cx("tv__title", longTitle && "tv__title--long")}>
               {np.title}
-              {np.explicit && <SquareLetterE className="explicit" role="img" aria-label="Explicit" />}
             </h1>
             <div className="tv__artist">{np.artist}</div>
             <LiveProgress np={np} clockOffset={clockOffset} paused={paused} />
