@@ -183,13 +183,6 @@
   font-size: calc(84 * var(--u));
   letter-spacing: -0.025em;
 }
-.tv__title .explicit {
-  width: 0.36em;
-  height: 0.36em;
-  margin-left: 0.18em;
-  vertical-align: 0.4em;
-  color: var(--tv-muted);
-}
 .tv__artist {
   margin-top: calc(16 * var(--u));
   font-size: calc(44 * var(--u));

@@ -205,6 +205,7 @@ export function RequestsTab() {
         <div className="list">
           {list.map((r) => (
             <TrackRow
+              showExplicit
               key={r.id}
               track={r.track}
               className="card-row"

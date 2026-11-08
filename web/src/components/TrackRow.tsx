@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
+import { SquareLetterE } from "lucide-react";
 import type { Track } from "../api/types";
 import { cx, fmtTime } from "../util";
 import { Artwork } from "./Artwork";
-import { SquareLetterE } from "lucide-react";
 
 export function TrackRow({
   track,
@@ -13,6 +13,7 @@ export function TrackRow({
   index,
   lead,
   wrap,
+  showExplicit,
 }: {
   track: Track;
   meta?: ReactNode;
@@ -24,6 +25,8 @@ export function TrackRow({
   lead?: ReactNode;
   /** Let long titles wrap onto a second line instead of truncating. */
   wrap?: boolean;
+  /** Show the explicit-content badge next to the title (admin only). */
+  showExplicit?: boolean;
 }) {
   return (
     <div className={cx("track-row", dim && "track-row--dim", className)}>
@@ -35,7 +38,7 @@ export function TrackRow({
           <span className="truncate" title={track.title}>
             {track.title}
           </span>
-          {track.explicit && <SquareLetterE size={14} className="explicit" role="img" aria-label="Explicit" />}
+          {showExplicit && track.explicit && <SquareLetterE size={14} className="explicit" role="img" aria-label="Explicit" />}
         </div>
         <div className="track-row__sub truncate">
           {track.artist}
