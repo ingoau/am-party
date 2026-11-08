@@ -473,22 +473,29 @@ function VolumeSlider({
     if (!holding.current && !pending.current) setV(value);
   }, [value]);
 
+  const dragging = useRef(false);
+  const inFlight = useRef(0);
+  const seq = useRef(0);
   const flush = () => {
     window.clearTimeout(timer.current);
     const p = pending.current;
-    if (!p) return;
+    if (!p) {
+      holding.current = dragging.current || inFlight.current > 0;
+      return;
+    }
     pending.current = null;
     holding.current = true;
-    void Promise.resolve(p.commit(p.n)).then(
-      (ok) => {
-        holding.current = false;
+    inFlight.current++;
+    const mine = ++seq.current;
+    const done = (ok: unknown) => {
+      inFlight.current--;
+      holding.current = dragging.current || inFlight.current > 0;
+      // only the latest commit decides; an older failure mustn't yank a newer value
+      if (mine === seq.current && !holding.current && !pending.current) {
         if (ok === false) setV(valueRef.current);
-      },
-      () => {
-        holding.current = false;
-        setV(valueRef.current);
-      },
-    );
+      }
+    };
+    void Promise.resolve(p.commit(p.n)).then(done, () => done(false));
   };
   const flushRef = useRef(flush);
   flushRef.current = flush;
@@ -506,15 +513,24 @@ function VolumeSlider({
       disabled={disabled}
       aria-label={label}
       style={{ ["--val" as string]: `${shown}%`, opacity: muted ? 0.5 : undefined }}
-      onPointerDown={() => {
-        holding.current = true;
+      onPointerDown={(e) => {
+        dragging.current = holding.current = true;
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          /* not capturable: pointerup/blur still end the drag */
+        }
       }}
       onPointerUp={() => {
-        holding.current = false;
+        dragging.current = false;
+        flush();
+      }}
+      onLostPointerCapture={() => {
+        dragging.current = false;
         flush();
       }}
       onPointerCancel={() => {
-        holding.current = false;
+        dragging.current = false;
         flush();
       }}
       onBlur={flush}

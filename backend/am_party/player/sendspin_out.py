@@ -298,8 +298,8 @@ class SendspinOutput:
             case ClientDisconnectedEvent(client_id=cid) | ClientRemovedEvent(client_id=cid):
                 asyncio.get_running_loop().call_soon(self._refresh_count)
                 asyncio.get_running_loop().call_soon(self._maybe_left, cid)
-                if isinstance(event, ClientRemovedEvent) and (watch := self._volume_watch.pop(cid, None)):
-                    watch[1]()
+                if isinstance(event, ClientRemovedEvent):
+                    self._release_watch(cid)
 
     def _on_group_event(self, _group: SendspinGroup, event: Any) -> None:
         # A connected member that got moved out (e.g. a "leave") is pulled back in.
@@ -338,6 +338,15 @@ class SendspinOutput:
             return  # already back (a reconnect replaced the old connection)
         del self._joined[client_id]
         self._notify(self.on_client_left, client_id)
+
+    def _release_watch(self, client_id: str) -> None:
+        # The removal event can arrive after the same client_id already reconnected as a new
+        # client object; keep the listener that belongs to the current one.
+        watch = self._volume_watch.get(client_id)
+        current = self._server.get_client(client_id) if self._server else None
+        if watch is not None and watch[0] is not current:
+            del self._volume_watch[client_id]
+            watch[1]()
 
     def _watch_volume(self, client: SendspinClient) -> None:
         cid = client.client_id

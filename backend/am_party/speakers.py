@@ -179,15 +179,16 @@ class SpeakerManager:
             LOGGER.info("Forgot %d unclaimed speakers not seen in %d days", n, PRUNE_AFTER // 86400)
         return n
 
-    async def _evict_unclaimed(self) -> None:
-        """Drop the oldest unclaimed offline speakers beyond MAX_UNCLAIMED."""
-        live = list(self._live)
+    async def _evict_unclaimed(self, keep: str) -> None:
+        """Drop the oldest unclaimed offline speakers beyond MAX_UNCLAIMED (never `keep`)."""
+        live = [*self._live, keep]
         sql = (
             "SELECT id FROM speakers WHERE id NOT IN (SELECT speaker_id FROM speaker_owners)"
             + (f" AND id NOT IN ({','.join('?' * len(live))})" if live else "")
             + " ORDER BY COALESCE(last_seen, created_at) DESC LIMIT -1 OFFSET ?"
         )
-        old = [r["id"] for r in await self.db.fetchall(sql, *live, MAX_UNCLAIMED)]
+        # `keep` (the speaker just added) is one of the MAX_UNCLAIMED that stay
+        old = [r["id"] for r in await self.db.fetchall(sql, *live, max(0, MAX_UNCLAIMED - 1))]
         if old:
             await self.db.execute(
                 f"DELETE FROM speakers WHERE id IN ({','.join('?' * len(old))})", *old
@@ -244,7 +245,7 @@ class SpeakerManager:
                     "INSERT INTO speakers(id, client_id, name, created_at, last_seen) VALUES(?,?,?,?,?)",
                     sid, client_id, name, t, t,
                 )
-                await self._evict_unclaimed()
+                await self._evict_unclaimed(keep=sid)
             else:
                 sid = row["id"]
                 # Until a name was chosen deliberately (and unless the owner locked the
