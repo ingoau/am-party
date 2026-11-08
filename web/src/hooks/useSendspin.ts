@@ -8,6 +8,34 @@ const K_NAME = "am-party.deviceName";
 const K_VOL = "am-party.volume";
 const K_MUTED = "am-party.muted";
 const K_DELAY = "am-party.syncDelayMs";
+const K_QUALITY = "am-party.opusKbps";
+
+/**
+ * Opus bitrates (kbps) a device can ask the server for; each must be in OPUS_BITRATES_KBPS
+ * (sendspin_out.py). 64 kbps stereo Opus is close to transparent for party music at about two
+ * thirds of libopus' automatic ~96 kbps, so it's the default.
+ */
+export const QUALITY_KBPS = [96, 64, 32] as const;
+export type Quality = (typeof QUALITY_KBPS)[number];
+export const DEFAULT_QUALITY: Quality = 64;
+
+const readQuality = (): Quality => {
+  const v = Number(storage.get(K_QUALITY));
+  return (QUALITY_KBPS as readonly number[]).includes(v) ? (v as Quality) : DEFAULT_QUALITY;
+};
+
+/**
+ * Why this browser can't get the (bitrate-adjustable) Opus stream, or null if it can.
+ * Mirrors sendspin-js' getBrowserSupportedCodecs(), which drops Opus on Firefox and wherever
+ * WebCodecs is missing (e.g. a page served over plain http://); Safari always gets Opus.
+ */
+export function opusUnavailableReason(): string | null {
+  const ua = navigator.userAgent;
+  if (/firefox/i.test(ua)) return "firefox";
+  if (/^((?!chrome|android).)*safari/i.test(ua)) return null;
+  if (typeof AudioDecoder !== "undefined") return null;
+  return window.isSecureContext ? "unsupported" : "insecure";
+}
 
 type SendspinModule = typeof import("@sendspin/sendspin-js");
 let sendspinMod: SendspinModule | null = null;
@@ -108,10 +136,13 @@ export function useSendspin() {
     return Number.isFinite(v) ? Math.max(0, Math.min(5000, Math.round(v))) : 0;
   });
   const syncDelayRef = useRef(syncDelay);
+  const [quality, setQualityState] = useState<Quality>(readQuality);
+  const qualityRef = useRef(quality);
   const volRef = useRef({ volume, muted });
   const nameRef = useRef(deviceName);
   useEffect(() => {
     syncDelayRef.current = syncDelay;
+    qualityRef.current = quality;
     volRef.current = { volume, muted };
     nameRef.current = deviceName;
   });
@@ -178,7 +209,9 @@ export function useSendspin() {
       let player: SendspinPlayer;
       try {
         player = new mod.SendspinPlayer({
-          baseUrl: location.origin,
+          // ws path /sendspin/<kbps>/sendspin picks the Opus bitrate (FLAC / PCM streams ignore it);
+          // sendspin-js appends /sendspin and keeps the path on its own reconnects.
+          baseUrl: `${location.origin}/sendspin/${qualityRef.current}`,
           clientName: name,
           productName: "am-party",
           // codecs left at default: the SDK filters out what this browser can't decode
@@ -315,8 +348,26 @@ export function useSendspin() {
     }
   }, []);
 
+  /**
+   * Pick the Opus bitrate. The server applies it per connection, so while listening this
+   * reconnects right away: call it from a click so the new AudioContext unlocks.
+   */
+  const setQuality = useCallback(
+    (kbps: Quality) => {
+      if (kbps === qualityRef.current) return;
+      qualityRef.current = kbps;
+      setQualityState(kbps);
+      storage.set(K_QUALITY, String(kbps));
+      if (playerRef.current) {
+        stop();
+        start();
+      }
+    },
+    [start, stop],
+  );
+
   /** True while listening under an older name (the rename applies on the next Listen). */
   const renamePending = status.listening && activeName !== null && activeName !== deviceName;
 
-  return { status, start, stop, volume, setVolume, muted, setMuted, deviceName, setDeviceName, renamePending, syncDelay, setSyncDelay };
+  return { status, start, stop, volume, setVolume, muted, setMuted, deviceName, setDeviceName, renamePending, syncDelay, setSyncDelay, quality, setQuality };
 }
