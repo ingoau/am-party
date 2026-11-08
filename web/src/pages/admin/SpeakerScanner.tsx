@@ -2,16 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { Check, CircleAlert, Loader2 } from "lucide-react";
 import { api, ApiError } from "../../api/client";
+import { useLive } from "../../hooks/live";
 import { errorText } from "./common";
 
 /** What a scanned QR code means to us. */
-export type ScannedCode = { kind: "speaker"; token: string } | { kind: "share"; token: string } | null;
+export type ScannedCode = { kind: "speaker" | "share"; token: string } | { kind: "foreign" } | null;
 
 /**
  * A speaker's claim QR is `${public_url}/?speaker=<token>`; a share code is
- * `${public_url}/admin/speakers?share=<token>`. Anything else isn't ours.
+ * `${public_url}/admin/speakers?share=<token>`. Either one from an origin not in `origins` is
+ * another party's ("foreign"); anything else isn't ours (null).
  */
-export function parseScannedCode(text: string): ScannedCode {
+export function parseScannedCode(text: string, origins: readonly string[]): ScannedCode {
   let url: URL;
   try {
     url = new URL(text.trim());
@@ -20,10 +22,10 @@ export function parseScannedCode(text: string): ScannedCode {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   const speaker = url.searchParams.get("speaker");
-  if (speaker) return { kind: "speaker", token: speaker };
-  const share = url.searchParams.get("share");
-  if (share && /\/admin\/speakers\/?$/.test(url.pathname)) return { kind: "share", token: share };
-  return null;
+  const share = /\/admin\/speakers\/?$/.test(url.pathname) ? url.searchParams.get("share") : null;
+  if (!speaker && !share) return null;
+  if (!origins.includes(url.origin)) return { kind: "foreign" };
+  return speaker ? { kind: "speaker", token: speaker } : { kind: "share", token: share! };
 }
 
 type Result =
@@ -39,7 +41,7 @@ const DECODE_WIDTH = 640;
 
 type Decoder = (video: HTMLVideoElement) => Promise<string[]>;
 
-/** The browser's BarcodeDetector where it reads QR codes (Chrome, Android, Safari 17+), else jsQR. */
+/** The browser's BarcodeDetector where it reads QR codes (Chrome on Android and macOS), else jsQR. */
 async function makeDecoder(): Promise<Decoder> {
   const BD = (globalThis as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector;
   if (BD) {
@@ -75,6 +77,15 @@ interface BarcodeDetectorCtor {
   getSupportedFormats(): Promise<string[]>;
 }
 
+const resultText = (r: Result) =>
+  r.status === "claiming"
+    ? "Claiming…"
+    : r.status === "error"
+      ? r.message
+      : r.status === "already"
+        ? `“${r.name}” is already yours`
+        : `Claimed “${r.name}”`;
+
 function cameraError(e: unknown): string {
   const name = e instanceof DOMException ? e.name : "";
   if (name === "NotAllowedError" || name === "SecurityError")
@@ -97,6 +108,14 @@ export function SpeakerScanner({ onClose, onShare }: { onClose: () => void; onSh
   const seen = useRef(new Map<string, number>());
   const onShareRef = useRef(onShare);
   onShareRef.current = onShare;
+  const { state } = useLive();
+  const originsRef = useRef<string[]>([]);
+  originsRef.current = [location.origin];
+  try {
+    if (state?.public_url) originsRef.current.push(new URL(state.public_url).origin);
+  } catch {
+    // a malformed public_url: only this origin counts
+  }
 
   useEffect(() => {
     let alive = true;
@@ -125,8 +144,9 @@ export function SpeakerScanner({ onClose, onShare }: { onClose: () => void; onSh
         }
         seen.current.set(token, Infinity);
       } catch (e) {
-        if (e instanceof ApiError) seen.current.set(token, Infinity);
-        else seen.current.set(token, Date.now()); // network trouble: try again if it's still in view
+        // A 4xx answer is final for this code; network trouble or a busy server is tried again if it's still in view.
+        const final = e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
+        seen.current.set(token, final ? Infinity : Date.now());
         if (alive)
           upsert({
             token,
@@ -139,14 +159,16 @@ export function SpeakerScanner({ onClose, onShare }: { onClose: () => void; onSh
       }
     };
 
+    const showHint = (text: string) => {
+      setHint(text);
+      window.clearTimeout(hintTimer);
+      hintTimer = window.setTimeout(() => alive && setHint(null), 2000);
+    };
+
     const handle = (text: string) => {
-      const code = parseScannedCode(text);
-      if (!code) {
-        setHint("That isn't a speaker code.");
-        window.clearTimeout(hintTimer);
-        hintTimer = window.setTimeout(() => alive && setHint(null), 2000);
-        return;
-      }
+      const code = parseScannedCode(text, originsRef.current);
+      if (!code) return showHint("That isn't a speaker code.");
+      if (code.kind === "foreign") return showHint("That code is for a different party.");
       const last = seen.current.get(code.token);
       if (last !== undefined && Date.now() - last < RETRY_AFTER) return;
       seen.current.set(code.token, Infinity);
@@ -181,8 +203,19 @@ export function SpeakerScanner({ onClose, onShare }: { onClose: () => void; onSh
       } catch {
         // autoplay of a muted inline video is allowed everywhere we care about; keep going regardless
       }
-      const decode = await makeDecoder();
+      let decode: Decoder;
+      try {
+        decode = await makeDecoder();
+      } catch {
+        stream.getTracks().forEach((t) => t.stop());
+        if (alive) setCamera({ error: "Couldn't load the QR reader. Reload the page and try again." });
+        return;
+      }
       if (!alive) return;
+      // e.g. iOS stops the camera when the app goes to the background
+      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        if (alive) setCamera({ error: "The camera stopped. Close this and tap “Claim speakers” again." });
+      });
       setCamera("on");
       const tick = async () => {
         if (!alive) return;
@@ -227,16 +260,15 @@ export function SpeakerScanner({ onClose, onShare }: { onClose: () => void; onSh
                 <video ref={videoRef} className="scan-dialog__video" playsInline muted autoPlay aria-label="Camera view" />
                 {camera === "starting" && <div className="spinner scan-dialog__spinner" />}
                 <div className="scan-dialog__frame" aria-hidden />
-                {hint && (
-                  <p className="scan-dialog__hint" role="status">
-                    {hint}
-                  </p>
-                )}
+                {hint && <p className="scan-dialog__hint">{hint}</p>}
               </>
             )}
           </div>
+          <p className="sr-only" role="status">
+            {hint ?? (results[0] && resultText(results[0]))}
+          </p>
           {results.length > 0 && (
-            <ul className="scan-list" aria-live="polite" aria-label="Scanned speakers">
+            <ul className="scan-list" aria-label="Scanned speakers">
               {results.map((r) => (
                 <li key={r.token} className={`scan-list__item is-${r.status}`}>
                   {r.status === "claiming" ? (
@@ -246,15 +278,7 @@ export function SpeakerScanner({ onClose, onShare }: { onClose: () => void; onSh
                   ) : (
                     <Check size={16} aria-hidden />
                   )}
-                  <span>
-                    {r.status === "claiming"
-                      ? "Claiming…"
-                      : r.status === "error"
-                        ? r.message
-                        : r.status === "already"
-                          ? `“${r.name}” is already yours`
-                          : `Claimed “${r.name}”`}
-                  </span>
+                  <span>{resultText(r)}</span>
                 </li>
               ))}
             </ul>
