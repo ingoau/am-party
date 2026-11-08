@@ -1,8 +1,21 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
-import type { SendspinStatus, useSendspin } from "../hooks/useSendspin";
+import { opusUnavailableReason, type Quality, type SendspinStatus, type useSendspin } from "../hooks/useSendspin";
 import { fmtBitrate, fmtBytes, useSendspinTraffic } from "../hooks/sendspinTraffic";
 
 export type Sendspin = ReturnType<typeof useSendspin>;
+
+/** Audio quality choices. Rough MB/hour includes protocol overhead on top of the Opus bitrate. */
+const QUALITY_OPTIONS: { kbps: Quality; label: string; hint: string }[] = [
+  { kbps: 96, label: "High", hint: "96 kbps · about 45 MB per hour" },
+  { kbps: 64, label: "Normal", hint: "64 kbps · about 30 MB per hour, sounds the same to most ears" },
+  { kbps: 32, label: "Data saver", hint: "32 kbps · about 15 MB per hour, noticeably duller sound" },
+];
+
+const OPUS_UNAVAILABLE: Record<string, string> = {
+  firefox: "Firefox can only play the lossless stream (several hundred MB per hour). Use Chrome or Safari to save data.",
+  insecure: "This page isn't on https://, so the browser gets the lossless stream (several hundred MB per hour). Open the https:// address to save data.",
+  unsupported: "This browser can only play the lossless stream (several hundred MB per hour).",
+};
 
 /** Same range as useSendspin's setSyncDelay. */
 const clampDelay = (ms: number) => Math.max(0, Math.min(5000, Math.round(ms) || 0));
@@ -40,7 +53,9 @@ export function DeviceSettingsForm({
   idPrefix: string;
   commitRef?: MutableRefObject<() => void>;
 }) {
-  const { deviceName, setDeviceName, renamePending, volume, setVolume, muted, syncDelay, setSyncDelay, status } = sp;
+  const { deviceName, setDeviceName, renamePending, volume, setVolume, muted, syncDelay, setSyncDelay, quality, setQuality, status } =
+    sp;
+  const [opusMissing] = useState(opusUnavailableReason);
   const [name, setName] = useState(deviceName);
   const [delay, setDelay] = useState(String(syncDelay));
   const traffic = useSendspinTraffic(status.listening);
@@ -65,6 +80,8 @@ export function DeviceSettingsForm({
   }, [delay, syncDelay, setSyncDelay]);
 
   const volLabel = `${idPrefix}-vol-label`;
+  const qualityLabel = `${idPrefix}-quality-label`;
+  const qualityOption = QUALITY_OPTIONS.find((o) => o.kbps === quality) ?? QUALITY_OPTIONS[1];
   return (
     <form
       onSubmit={(e) => {
@@ -120,6 +137,31 @@ export function DeviceSettingsForm({
         />
         <span className="field__hint">Raise if this speaker sounds late compared with the others.</span>
       </label>
+      <div className="field">
+        <span className="field__label" id={qualityLabel}>
+          Audio quality
+        </span>
+        <div className="segmented" role="radiogroup" aria-labelledby={qualityLabel}>
+          {QUALITY_OPTIONS.map((o) => (
+            <button
+              key={o.label}
+              type="button"
+              role="radio"
+              aria-checked={quality === o.kbps}
+              className={quality === o.kbps ? "is-active" : undefined}
+              disabled={opusMissing !== null}
+              onClick={() => setQuality(o.kbps)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <span className="field__hint">
+          {opusMissing !== null
+            ? OPUS_UNAVAILABLE[opusMissing]
+            : `${qualityOption.hint}.${status.listening ? " Changing it reconnects the audio briefly." : ""}`}
+        </span>
+      </div>
       <div className={`sync sync--${status.sync}`}>
         <span className="sync__dot" aria-hidden />
         {/* Only state changes are announced, not every ±ms tick of the sync error. */}

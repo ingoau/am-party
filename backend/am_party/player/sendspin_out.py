@@ -30,14 +30,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
+import dataclasses
 import importlib
 import logging
+import struct
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from aiosendspin.audio.codecs import OpusEncoder, _require_av
 from aiosendspin.models.core import ClientHelloPayload, DeviceInfo
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.trust_store import InMemoryServerPairingStore, TrustedUnpairedClient
@@ -54,6 +58,7 @@ from aiosendspin.server.compliance import ClientComplianceError
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles import Role
 from aiosendspin.server.roles.metadata.state import Metadata
+from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from aiosendspin.server.roles.registry import register_role
 
 from am_party.models import BYTES_PER_SECOND, CHANNELS, FRAME_SIZE, SAMPLE_RATE
@@ -74,6 +79,11 @@ DEFAULT_MAX_LISTENERS_PER_IP = 50  # party wifi usually shares one public IP
 SLICE_SECONDS = 0.1
 SLICE_BYTES = int(SAMPLE_RATE * SLICE_SECONDS) * FRAME_SIZE
 PCM_FORMAT = AudioFormat(SAMPLE_RATE, 32, CHANNELS, "float")
+
+# Opus bitrates (kbps) a client may ask for (the web player asks for 64 by default) instead
+# of the library default (libopus' automatic ~96 kbps). Each one in use costs one extra
+# shared encoder, so the set is small and fixed.
+OPUS_BITRATES_KBPS = frozenset({32, 48, 64, 96})
 
 
 class _AnchorRole(Role):
@@ -109,6 +119,86 @@ class _AnchorRole(Role):
 
 
 register_role(ANCHOR_ROLE_ID, _AnchorRole)
+
+
+class _BitrateOpusEncoder(OpusEncoder):
+    """``OpusEncoder`` with a fixed target bitrate instead of libopus' automatic one.
+
+    The library's encoder ignores its ``options`` and opens libopus with defaults, so
+    ``_ensure_initialized`` (aiosendspin 10.3.0) is repeated here with ``bit_rate`` set
+    before the codec is opened. The bitrate travels as the ``bitrate`` transform option
+    (bits/s), which the transformer pool and the push stream both key encoders on:
+    clients asking for the same bitrate share one encoder, different ones don't.
+    """
+
+    def __init__(self, *, options: Mapping[str, str], **kwargs: Any) -> None:
+        self._bitrate = int(options["bitrate"])
+        super().__init__(options=options, **kwargs)
+
+    def _ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        av = _require_av()
+        self._encoder = av.AudioCodecContext.create("libopus", "w")
+        self._encoder.sample_rate = self._sample_rate
+        self._encoder.layout = "stereo" if self._channels == 2 else "mono"
+        self._encoder.format = "s16"
+        self._encoder.bit_rate = self._bitrate
+        with av.logging.Capture():
+            self._encoder.open()
+        if self._encoder.frame_size:
+            self._chunk_samples = self._encoder.frame_size
+            self._chunk_duration_us = self._chunk_samples * 1_000_000 // self._sample_rate
+        extradata = self._encoder.extradata
+        if extradata and len(extradata) >= 12 and extradata[:8] == b"OpusHead":
+            pre_skip_samples = struct.unpack_from("<H", extradata, 10)[0]
+            self._lookahead_us = pre_skip_samples * 1_000_000 // 48_000
+        self._initialized = True
+
+
+# Opus bitrate (kbps) the websocket being handed to the Sendspin server asked for (from
+# its URL). Set by ``ws_proxy`` around ``on_client_connect``, which runs the whole
+# connection, so the player role sees it when the client's hello activates it.
+_REQUESTED_OPUS_KBPS: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "am_party_requested_opus_kbps", default=None
+)
+
+
+class _PlayerRole(PlayerV1Role):
+    """``player@v1`` that honours a per-connection Opus bitrate.
+
+    The bitrate is captured on every (re)connect, so a client changes it by
+    reconnecting at another URL. Clients that get FLAC or PCM are unaffected.
+    """
+
+    _opus_kbps: int | None = None
+
+    def on_connect(self) -> None:
+        self._opus_kbps = _REQUESTED_OPUS_KBPS.get()
+        super().on_connect()
+
+    def _ensure_audio_requirements(self, *, force: bool = False) -> None:
+        super()._ensure_audio_requirements(force=force)
+        req = self._audio_requirements
+        kbps = self._opus_kbps
+        if kbps is None or req is None or type(req.transformer) is not OpusEncoder:
+            return
+        options = {"bitrate": str(kbps * 1000)}
+        transformer = self._client.group.transformer_pool.get_or_create(
+            _BitrateOpusEncoder,
+            channel_id=req.channel_id.int,
+            sample_rate=req.sample_rate,
+            bit_depth=req.bit_depth,
+            channels=req.channels,
+            frame_duration_us=req.frame_duration_us,
+            options=options,
+        )
+        self._audio_requirements = dataclasses.replace(
+            req, transformer=transformer, transform_options=options
+        )
+
+
+register_role("player@v1", lambda client: _PlayerRole(client=client))
 
 
 class _TrustAllPairingStore(InMemoryServerPairingStore):
@@ -415,7 +505,10 @@ class SendspinOutput:
     # ------------------------------------------------------------------ websocket
 
     async def ws_proxy(
-        self, request: web.Request, client_ip: str | None = None
+        self,
+        request: web.Request,
+        client_ip: str | None = None,
+        opus_kbps: int | None = None,
     ) -> web.WebSocketResponse:
         """Handle ``GET /sendspin`` on the main app.
 
@@ -425,16 +518,23 @@ class SendspinOutput:
 
         Connections are capped per client IP and in total (``on_client_connect``
         runs for the whole lifetime of the connection).
+
+        ``opus_kbps`` (one of ``OPUS_BITRATES_KBPS``) is the bitrate this connection's
+        player gets if it streams Opus; ``None`` keeps the library default.
         """
+        if opus_kbps is not None and opus_kbps not in OPUS_BITRATES_KBPS:
+            raise web.HTTPNotFound()
         if self._server is None:
             raise web.HTTPServiceUnavailable(text="Sendspin output not running")
         key = client_ip or request.remote or "unknown"
         if not self._conns.acquire(key):
             self._log.warning("Refusing Sendspin connection from %s: listener limit reached", key)
             raise web.HTTPServiceUnavailable(text="Too many listeners connected")
+        token = _REQUESTED_OPUS_KBPS.set(opus_kbps)
         try:
             resp = await self._server.on_client_connect(request)
         finally:
+            _REQUESTED_OPUS_KBPS.reset(token)
             self._conns.release(key)
         assert isinstance(resp, web.WebSocketResponse)
         return resp
