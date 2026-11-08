@@ -65,6 +65,8 @@ export type SongRequest = {
   decided_by?: string | null;
   /** Admin views only: anonymised label such as "Guest 7F3A". */
   guest_label?: string;
+  /** Admin views only: name of the speaker whose QR the guest scanned; absent if none. */
+  speaker?: string;
 };
 
 export type Permission =

@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS requests (
     status TEXT NOT NULL DEFAULT 'pending',
     created_at REAL NOT NULL,
     decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    decided_at REAL
+    decided_at REAL,
+    -- the speaker whose QR the guest scanned (/?speaker=<claim token>), if any
+    speaker_id TEXT REFERENCES speakers(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 
@@ -146,6 +148,11 @@ class Database:
         await self.conn.commit()
 
     async def _migrate(self) -> None:
+        req_cols = {r["name"] for r in await self.fetchall("PRAGMA table_info(requests)")}
+        if "speaker_id" not in req_cols:
+            await self.c.execute(
+                "ALTER TABLE requests ADD COLUMN speaker_id TEXT REFERENCES speakers(id) ON DELETE SET NULL"
+            )
         cols = {r["name"] for r in await self.fetchall("PRAGMA table_info(users)")}
         if "permissions" not in cols:
             # v1 -> v2: individual permissions replace can_approve / can_manage_queue

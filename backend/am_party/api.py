@@ -265,7 +265,9 @@ async def create_request(request: web.Request) -> web.Response:
     data = await body(request)
     gid, new = guest(request)
     track_id = track_id_param(data)
-    req = await enc(request).party.create_request(gid, track_id, ip=ip_of(request))
+    e = enc(request)
+    speaker_id = e.speakers.speaker_for_token(data.get("speaker"))
+    req = await e.party.create_request(gid, track_id, ip=ip_of(request), speaker_id=speaker_id)
     resp = web.json_response({"request": req}, status=201)
     if new:
         set_guest(resp, request, gid)

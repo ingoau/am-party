@@ -442,6 +442,11 @@ class SpeakerManager:
             raise ApiError(404, "That speaker code has expired. Scan the speaker again.")
         return sid
 
+    def speaker_for_token(self, token: Any) -> str | None:
+        """The connected speaker a claim token (from its QR) belongs to, or None."""
+        sid = self._claims.get(token) if isinstance(token, str) else None
+        return sid if sid is not None and sid in self._live else None
+
     async def claim_preview(self, user: User, token: Any) -> dict[str, Any]:
         sid = self._claim_target(token)
         row = await self.db.fetchone("SELECT id, name FROM speakers WHERE id=?", sid)
