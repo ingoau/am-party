@@ -49,7 +49,6 @@ export function StreamPage() {
           type="button"
           className={cx("btn", "btn--lg", "stream__listen", !listening && "btn--primary")}
           onClick={() => (listening ? sp.stop() : sp.start())}
-          aria-pressed={listening}
         >
           {listening ? (
             <span className="eq" aria-hidden>
@@ -69,7 +68,6 @@ export function StreamPage() {
             className={cx("icon-btn", "stream__mute", sp.muted && "is-muted")}
             onClick={() => sp.setMuted(!sp.muted)}
             aria-label={sp.muted ? "Unmute this device" : "Mute this device"}
-            aria-pressed={sp.muted}
             title={sp.muted ? "Unmute" : "Mute"}
           >
             {sp.muted || sp.volume === 0 ? <VolumeX aria-hidden /> : <Volume2 aria-hidden />}

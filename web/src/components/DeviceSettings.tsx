@@ -4,6 +4,9 @@ import { fmtBitrate, fmtBytes, useSendspinTraffic } from "../hooks/sendspinTraff
 
 export type Sendspin = ReturnType<typeof useSendspin>;
 
+/** Same range as useSendspin's setSyncDelay. */
+const clampDelay = (ms: number) => Math.max(0, Math.min(5000, Math.round(ms) || 0));
+
 export function syncLabel(status: SendspinStatus): string {
   switch (status.sync) {
     case "off":
@@ -46,9 +49,15 @@ export function DeviceSettingsForm({
   useEffect(() => {
     commitName.current = () => {
       if (name.trim() && name.trim() !== deviceName) setDeviceName(name);
+      // A blank (or unchanged) name isn't saved: show the current one again.
+      else setName(deviceName);
     };
     if (commitRef) commitRef.current = () => commitName.current();
   });
+  // The form can stay mounted (/stream): keep the fields in step with what was actually saved
+  // (trimmed name, clamped delay).
+  useEffect(() => setName(deviceName), [deviceName]);
+  useEffect(() => setDelay(String(syncDelay)), [syncDelay]);
   useEffect(() => {
     if (delay === "" || Number(delay) === syncDelay) return;
     const t = window.setTimeout(() => setSyncDelay(Number(delay)), 400);
@@ -103,12 +112,21 @@ export function DeviceSettingsForm({
           step={10}
           value={delay}
           onChange={(e) => setDelay(e.target.value)}
+          onBlur={() => {
+            // Apply now and show the stored (clamped) value, e.g. 9000 → 5000 or "" → current.
+            if (delay !== "") setSyncDelay(Number(delay));
+            setDelay(String(clampDelay(delay === "" ? syncDelay : Number(delay))));
+          }}
         />
         <span className="field__hint">Raise if this speaker sounds late compared with the others.</span>
       </label>
-      <div className={`sync sync--${status.sync}`} role="status">
+      <div className={`sync sync--${status.sync}`}>
         <span className="sync__dot" aria-hidden />
-        <span className="sync__label">{syncLabel(status)}</span>
+        {/* Only state changes are announced, not every ±ms tick of the sync error. */}
+        <span className="sync__label">
+          <span role="status">{status.sync === "synced" ? "In sync" : syncLabel(status)}</span>
+          {status.sync === "synced" && status.syncErrorMs !== null && ` · ±${Math.max(1, Math.round(Math.abs(status.syncErrorMs)))} ms`}
+        </span>
       </div>
       {status.listening && status.codec && (
         <div className="field__hint">

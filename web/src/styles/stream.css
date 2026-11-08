@@ -78,3 +78,7 @@
 .stream__links a:hover {
   color: var(--text);
 }
+.stream__header .chip svg {
+  width: 1em;
+  height: 1em;
+}
