@@ -54,7 +54,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt && rm /tmp/requireme
 COPY backend/tests ./tests
 RUN chown -R am_party:am_party /app/tests
 ENV PYTHONPYCACHEPREFIX=/tmp/pyc
-CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-W", "ignore::DeprecationWarning", "tests"]
+# xdist: worksteal rebalances the long real-time engine tests, which the default
+# `load` scheduler clumps onto one worker.
+CMD ["python", "-m", "pytest", "-q", "-n", "auto", "--dist", "worksteal", "-p", "no:cacheprovider", "-W", "ignore::DeprecationWarning", "tests"]
 
 # Default target: the app
 FROM runtime AS app

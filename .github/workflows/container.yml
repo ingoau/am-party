@@ -16,12 +16,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    name: Test
+  # One job: test, then (outside PRs) publish. The app target is the test
+  # target minus the test layers, so the publish build reuses the layers this
+  # job's builder already has instead of pulling them again on a second runner.
+  build:
+    name: Test and publish image
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,23 +50,8 @@ jobs:
       - name: Run tests
         run: docker run --rm am-party-test:ci
 
-  image:
-    name: Build and publish image
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
+      # Nothing is published from PRs, and the test build already proved the
+      # app target builds, so the publish steps only run on main and tags.
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -72,6 +61,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Image metadata
+        if: github.event_name != 'pull_request'
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
@@ -81,23 +71,23 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
-            type=ref,event=pr
           labels: |
             org.opencontainers.image.title=am-party
             org.opencontainers.image.description=Self-hosted Apple Music party jukebox with synced playback and smart crossfades
             org.opencontainers.image.licenses=GPL-3.0-only
 
+      # Every layer is already in this builder from the test build, so no
+      # cache-from/cache-to here (the test build exported the full cache).
       - name: Build and push
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           target: app
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha,scope=am-party
-          cache-to: type=gha,scope=am-party,mode=max
           provenance: mode=max
           sbom: true
