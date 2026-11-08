@@ -9,6 +9,7 @@ Run (from backend/):
 from __future__ import annotations
 
 import asyncio
+import struct
 import time
 
 import pytest
@@ -168,6 +169,86 @@ async def test_native_listener_port() -> None:
             await out.stop()
 
 
+async def test_per_client_opus_bitrate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/sendspin/<kbps>/sendspin gets that Opus bitrate, plain /sendspin the default."""
+    import random
+
+    import aiohttp
+    import aiosendspin.client.client as ref_client
+    import aiosendspin.client.connection as ref_conn
+    from aiosendspin.models.types import AudioCodec
+
+    # The reference client can't decode Opus; it only has to accept the stream here
+    # (its chunk listeners get the raw packets, which is all this test measures).
+    decodable = (*ref_conn.DECODABLE_CODECS, AudioCodec.OPUS)
+    monkeypatch.setattr(ref_conn, "DECODABLE_CODECS", decodable)
+    monkeypatch.setattr(ref_client, "DECODABLE_CODECS", decodable)
+    from aiosendspin.noise.keys import Identity
+
+    from am_party.models import SAMPLE_RATE
+    from am_party.player.sendspin_out import _BitrateOpusEncoder
+
+    rng = random.Random(1)
+
+    def noise(seconds: float) -> bytes:  # white noise: VBR can't undershoot the target
+        n = int(seconds * SAMPLE_RATE) * 2
+        return struct.pack(f"<{n}f", *(rng.uniform(-0.3, 0.3) for _ in range(n)))
+
+    async def produce(out, seconds: float) -> None:
+        for _ in range(int(seconds / 0.25)):
+            await out.write(noise(0.25))
+
+    def rate(rec, since_ts: int) -> float:
+        got = [(ts, n) for ts, n in rec.chunks if ts >= since_ts]
+        span = (got[-1][0] - got[0][0]) / 1e6
+        return sum(n for _, n in got[:-1]) * 8 / span / 1000  # kbps of payload
+
+    async with Harness(buffer_ahead=1.0) as h:
+        base = h.url.removesuffix("/sendspin")
+        producer = asyncio.create_task(produce(h.out, 14.0))
+        dflt = await make_client("default", h.url, h.session, AudioCodec.OPUS)
+        low_id = Identity.generate()
+        low = await make_client("low", f"{base}/sendspin/32/sendspin", h.session, AudioCodec.OPUS, low_id)
+        mid = await make_client("mid", f"{base}/sendspin/64/sendspin", h.session, AudioCodec.OPUS)
+        assert await wait_for(lambda: h.out.listener_count() == 3)
+        assert await wait_for(lambda: all(len(r.chunks) > 100 for r in (dflt, low, mid)), 8)
+        await asyncio.sleep(3.0)
+        since = max(r.chunks[-1][0] for r in (dflt, low, mid)) - 2_500_000
+        r_dflt, r_low, r_mid = rate(dflt, since), rate(low, since), rate(mid, since)
+        print(f"kbps default={r_dflt:.1f} 32={r_low:.1f} 64={r_mid:.1f}")
+        assert 20 <= r_low <= 38, r_low
+        assert 45 <= r_mid <= 72, r_mid
+        assert r_dflt > 1.25 * r_mid, (r_dflt, r_mid)
+        encoders = [
+            t for t in h.out._server.get_client(low.client._client_id).group.transformer_pool._transformers.values()  # noqa: SLF001
+            if isinstance(t, _BitrateOpusEncoder)
+        ]
+        assert sorted(t._bitrate for t in encoders) == [32000, 64000]  # noqa: SLF001
+
+        # The same device reconnecting without a bitrate is back on the default.
+        await low.client.disconnect()
+        assert await wait_for(lambda: h.out.listener_count() == 2)
+        again = await make_client("low", h.url, h.session, AudioCodec.OPUS, low_id)
+        assert again.client._client_id == low.client._client_id  # noqa: SLF001
+        assert await wait_for(lambda: len(again.chunks) > 100, 8)
+        await asyncio.sleep(2.0)
+        r_again = rate(again, again.chunks[-1][0] - 2_000_000)
+        print(f"kbps after reconnect={r_again:.1f}")
+        assert r_again > 1.25 * r_mid, (r_again, r_mid)
+
+        producer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await producer
+        for r in (dflt, mid, again):
+            await r.client.disconnect()
+
+        # Bitrates outside the allowed set are refused before the websocket upgrade.
+        async with aiohttp.ClientSession() as s:
+            with pytest.raises(aiohttp.WSServerHandshakeError) as err:
+                await s.ws_connect(f"{base}/sendspin/500/sendspin")
+            assert err.value.status == 404
+
+
 async def _produce(out, seconds: float) -> None:
     from .harness import sine_pcm
 
@@ -187,7 +268,7 @@ async def test_per_client_events_and_volume_commands() -> None:
         h.out.on_client_left = left.append
         h.out.on_client_volume = lambda cid, v, m: reported.append((cid, v, m))
         ident = Identity.generate()
-        a = await make_client("Kitchen", h.url, h.session, ident, [PlayerCommand.VOLUME, PlayerCommand.MUTE])
+        a = await make_client("Kitchen", h.url, h.session, identity=ident, commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE])
         commands: list[object] = []
         a.client.add_server_command_listener(commands.append)
         cid = a.client._client_id  # noqa: SLF001
@@ -209,7 +290,7 @@ async def test_per_client_events_and_volume_commands() -> None:
         assert not h.out.set_client_volume(cid, 10)
 
         # same identity => same client_id after a reconnect
-        b = await make_client("Kitchen", h.url, h.session, ident, [PlayerCommand.VOLUME, PlayerCommand.MUTE])
+        b = await make_client("Kitchen", h.url, h.session, identity=ident, commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE])
         assert b.client._client_id == cid  # noqa: SLF001
         assert await wait_for(lambda: joined == [(cid, "Kitchen"), (cid, "Kitchen")])
         # volume reports still arrive on the new connection (even if the library replaced

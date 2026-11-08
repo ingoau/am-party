@@ -99,7 +99,7 @@ Apple allows one concurrent stream per account — don't play the same account e
   docker build --target test -t am-party:test .   # runtime image + pytest, tests baked in
   docker run --rm am-party:test                     # runs the whole suite
   # against your working tree without rebuilding:
-  docker run --rm -v $PWD/backend:/app -w /app am-party:test python -m pytest -q -p no:cacheprovider tests
+  docker run --rm -v $PWD/backend:/app -w /app am-party:test python -m pytest -q -n auto --dist worksteal -p no:cacheprovider tests
   ```
   Python dependencies: `backend/requirements.txt` (runtime, the only source of truth) and
   `backend/requirements-dev.txt` (tests).

@@ -60,6 +60,7 @@ async def make_client(
     name: str,
     url: str,
     session: aiohttp.ClientSession,
+    codec: AudioCodec = AudioCodec.PCM,
     identity: Identity | None = None,
     commands: list[object] | None = None,
 ) -> ClientRecord:
@@ -72,9 +73,8 @@ async def make_client(
         device_info=DeviceInfo(product_name="am_party-test", manufacturer="am_party"),
         player_support=ClientHelloPlayerSupport(
             supported_formats=[
-                SupportedAudioFormat(
-                    codec=AudioCodec.PCM, channels=2, sample_rate=48000, bit_depth=16
-                )
+                SupportedAudioFormat(codec=c, channels=2, sample_rate=48000, bit_depth=16)
+                for c in dict.fromkeys([codec, AudioCodec.PCM])  # preferred first; PCM is mandatory
             ],
             buffer_capacity=4_000_000,
         ),
@@ -113,6 +113,11 @@ class Harness:
         await self.out.start()
         app = web.Application()
         app.router.add_get("/sendspin", self.out.ws_proxy)
+
+        async def with_bitrate(request: web.Request) -> web.StreamResponse:
+            return await self.out.ws_proxy(request, opus_kbps=int(request.match_info["kbps"]))
+
+        app.router.add_get(r"/sendspin/{kbps:\d+}/sendspin", with_bitrate)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, "127.0.0.1", self.port)

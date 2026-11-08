@@ -327,10 +327,16 @@ async def logout(request: web.Request) -> web.Response:
 
 
 @routes.get("/sendspin")
+@routes.get(r"/sendspin/{kbps:\d{1,3}}/sendspin")
 async def sendspin_proxy(request: web.Request) -> web.StreamResponse:
+    """Sendspin websocket. ``/sendspin/<kbps>/sendspin`` picks the Opus bitrate (the web
+    player's quality setting); sendspin-js keeps that path across its own reconnects."""
     if not origin_allowed(request):
         raise web.HTTPForbidden(text="Cross-site WebSocket blocked")
-    return await enc(request).output.ws_proxy(request, client_ip=ip_of(request))
+    kbps = request.match_info.get("kbps")
+    return await enc(request).output.ws_proxy(
+        request, client_ip=ip_of(request), opus_kbps=int(kbps) if kbps else None
+    )
 
 
 # --------------------------------------------------------------------------- approvers
