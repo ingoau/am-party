@@ -20,12 +20,28 @@ export const FALLBACK_CATALOG: PermissionInfo[] = [
 
 export type Preset = { id: string; label: string; description: string; permissions: Permission[] };
 
+/** What the one-tap "Approve" button grants someone waiting for access. */
+export const DEFAULT_PRESET: Preset = {
+  id: "default",
+  label: "Default",
+  description: "Approve requests, add to the queue, skip songs and claim speakers",
+  permissions: ["approve_requests", "queue_add", "playback_skip", "claim_speakers"],
+};
+
+/** Presets offered in the permission menus, and used to name a user's role. */
 export const PRESETS: Preset[] = [
+  DEFAULT_PRESET,
   {
     id: "dj",
     label: "DJ",
     description: "Add, reorder and remove songs; skip and pause",
     permissions: ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause"],
+  },
+  {
+    id: "controller",
+    label: "Controller",
+    description: "Everything a DJ can do, plus claim and control speakers",
+    permissions: ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause", "claim_speakers"],
   },
   { id: "approver", label: "Approver", description: "Approve or reject guest requests", permissions: ["approve_requests"] },
 ];

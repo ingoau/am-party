@@ -8,7 +8,7 @@ import { cx, timeAgo } from "../../util";
 import { initials } from "./AdminApp";
 import { Checkbox, PageHeader, flash } from "./common";
 import { useConfirm } from "./ConfirmDialog";
-import { PRESETS, groupCatalog, usePermissionCatalog, type PermissionGroup, type Preset } from "./permissions";
+import { DEFAULT_PRESET, PRESETS, groupCatalog, usePermissionCatalog, type PermissionGroup, type Preset } from "./permissions";
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -78,7 +78,7 @@ export function UsersTab({ me }: { me: User }) {
     void mutate(() => api.bulkUsers({ user_ids: [u.id], ...(on ? { add: [p] } : { remove: [p] }) }));
   };
 
-  /** One-tap role for someone waiting for access. */
+  /** One-tap access for someone waiting for it. */
   const grantPreset = (u: User, preset: Preset) => {
     patchLocal(u.id, (x) => {
       const granted = [...new Set([...x.granted, ...preset.permissions])];
@@ -86,7 +86,7 @@ export function UsersTab({ me }: { me: User }) {
     });
     void mutate(
       () => api.bulkUsers({ user_ids: [u.id], add: [...preset.permissions] }),
-      `${u.name} is now ${preset.id === "approver" ? "an" : "a"} ${preset.label}`,
+      `${u.name} approved`,
     );
   };
 
@@ -341,11 +341,9 @@ function UserRow({
       </div>
       {waiting && (
         <div className="urow__quick">
-          {PRESETS.map((p) => (
-            <button key={p.id} type="button" className="btn btn--sm" onClick={() => onPreset(p)} title={p.description}>
-              Make {p.label}
-            </button>
-          ))}
+          <button type="button" className="btn btn--sm" onClick={() => onPreset(DEFAULT_PRESET)} title={DEFAULT_PRESET.description} aria-label={`Approve ${u.name}`}>
+            Approve
+          </button>
         </div>
       )}
       <button
@@ -412,7 +410,10 @@ function roleOf(u: User): { label: string; className: string } {
   if (u.is_admin) return { label: "Admin", className: "role-btn--admin" };
   if (u.granted.length === 0) return { label: "No access", className: "role-btn--none" };
   const set = new Set(u.granted);
-  const matched = PRESETS.filter((p) => p.permissions.every((x) => set.has(x)));
+  // Prefer the widest bundles, so "Default" isn't also shown as "Default + Approver".
+  const matched = PRESETS.filter((p) => p.permissions.every((x) => set.has(x))).filter(
+    (p, _, all) => !all.some((q) => q !== p && q.permissions.length > p.permissions.length && p.permissions.every((x) => q.permissions.includes(x))),
+  );
   const covered = new Set(matched.flatMap((p) => p.permissions));
   if (matched.length && u.granted.every((x) => covered.has(x))) return { label: matched.map((p) => p.label).join(" + "), className: "role-btn--role" };
   return { label: `Custom · ${u.granted.length}`, className: "role-btn--role" };
