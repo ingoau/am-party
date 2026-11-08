@@ -1340,3 +1340,86 @@
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-2);
 }
+
+/* Claim speakers: QR scanner */
+.scan-dialog__view {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  /* square, but never taller than half the screen (phones in landscape) */
+  width: min(100%, 50dvh);
+  margin: 0 auto var(--space-4);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #000;
+}
+.scan-dialog__video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.scan-dialog__frame {
+  position: absolute;
+  inset: 18%;
+  border: 2px solid rgb(255 255 255 / 0.8);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.25);
+  pointer-events: none;
+}
+.scan-dialog__spinner {
+  position: absolute;
+  margin: 0;
+}
+.scan-dialog__hint {
+  position: absolute;
+  bottom: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.7);
+  color: #fff;
+  font-size: var(--fs-2);
+  white-space: nowrap;
+}
+.scan-dialog__error {
+  margin: 0;
+  padding: var(--space-5);
+  color: #fff;
+  text-align: center;
+}
+.scan-list {
+  list-style: none;
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  max-height: 30vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+.scan-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+.scan-list__item svg {
+  flex: none;
+}
+.scan-list__item.is-claimed svg,
+.scan-list__item.is-already svg {
+  color: var(--ok);
+}
+.scan-list__item.is-error {
+  color: var(--err);
+}
+.scan-list__item .spin {
+  animation: spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-list__item .spin {
+    animation: none;
+  }
+}

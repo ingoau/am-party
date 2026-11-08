@@ -22,6 +22,7 @@
     "@sendspin/sendspin-js": "^5.0.0",
     "clsx": "^2.1.1",
     "fast-average-color": "^9.6.0",
+    "jsqr": "^1.4.0",
     "lucide-react": "^1.69.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
