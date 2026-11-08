@@ -341,6 +341,20 @@ class SendspinOutput:
         self._anchor = None
         self._set_count(0)
 
+    async def disconnect_clients(self) -> None:
+        """Drop every player's connection but keep the server, so their long-lived
+        ``ws_proxy`` handlers return now (at shutdown, before aiohttp waits on them)."""
+        if self._server is None:
+            return
+
+        async def drop(client: SendspinClient) -> None:
+            if client.connection is None:
+                return
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(client.connection.disconnect(), 1)
+
+        await asyncio.gather(*(drop(c) for c in list(self._server.connected_clients)))
+
     # ------------------------------------------------------------------ clients
 
     @property

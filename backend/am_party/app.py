@@ -150,13 +150,18 @@ class AmParty:
             self.smartfades_error = worker.error
 
     async def close_client_sockets(self) -> None:
-        """Close every browser websocket concurrently, giving each a moment to ack."""
+        """Close every browser websocket (UI and Sendspin) concurrently, giving each a
+        moment to ack."""
 
         async def close(ws: web.WebSocketResponse) -> None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(ws.close(code=1001, message=b"server restarting"), 1)
 
-        await asyncio.gather(*(close(ws) for ws in list(self.hub.clients)))
+        output = getattr(self, "output", None)
+        await asyncio.gather(
+            *(close(ws) for ws in list(self.hub.clients)),
+            *([output.disconnect_clients()] if output else []),
+        )
 
     async def stop(self) -> None:
         # cancel and *await* background work before tearing down what it uses

@@ -300,3 +300,19 @@ async def test_per_client_events_and_volume_commands() -> None:
         assert await wait_for(lambda: (cid, 42, True) in reported)
         await b.client.disconnect()
         assert await wait_for(lambda: left == [cid, cid])
+
+
+async def test_disconnect_clients_keeps_server() -> None:
+    """At shutdown the players' ws_proxy handlers must return promptly (aiohttp waits on
+    them before on_cleanup), while the server itself stays up until ``stop``."""
+    async with Harness() as h:
+        await make_client("a", h.url, h.session)
+        await make_client("b", h.url, h.session)
+        assert await wait_for(lambda: h.out.listener_count() == 2)
+        t0 = time.monotonic()
+        await h.out.disconnect_clients()
+        assert await wait_for(lambda: h.out.listener_count() == 0, 2)
+        assert time.monotonic() - t0 < 2.5
+        # no handler is left for aiohttp's shutdown to wait on
+        assert await wait_for(lambda: not h.runner.server.connections, 2)  # type: ignore[union-attr]
+        assert h.out._server is not None  # noqa: SLF001
