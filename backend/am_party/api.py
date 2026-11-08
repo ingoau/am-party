@@ -543,6 +543,14 @@ async def speakers_share_accept(request: web.Request) -> web.Response:
     return web.json_response({"speakers": speakers})
 
 
+@routes.post("/api/speakers/assign")
+async def speakers_assign(request: web.Request) -> web.Response:
+    csrf_check(request)
+    user = await speaker_owner(request)
+    data = await body(request)
+    return web.json_response({"speakers": await enc(request).speakers.assign(user, data)})
+
+
 @routes.patch("/api/speakers/{id}")
 async def speaker_update(request: web.Request) -> web.Response:
     csrf_check(request)

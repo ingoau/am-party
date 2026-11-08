@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { Lock, Minus, Pencil, Plus, Trash2, Volume2, VolumeX, X } from "lucide-react";
+import { Lock, Minus, Pencil, Plus, Trash2, UserPlus, Volume2, VolumeX, X } from "lucide-react";
 import { api } from "../../api/client";
 import type { ShareMode, Speaker, SpeakerControl, User } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { cx, timeAgo } from "../../util";
 import { Checkbox, PageHeader, flash } from "./common";
 import { useConfirm } from "./ConfirmDialog";
-import { AcceptShareDialog, ShareDialog } from "./SpeakerDialogs";
+import { AcceptShareDialog, AssignDialog, ShareDialog } from "./SpeakerDialogs";
 
 /** −/+ in the bulk bar move every selected speaker by this much. */
 const VOLUME_STEP = 5;
@@ -18,13 +18,17 @@ const plural = (n: number) => `${n} speaker${n === 1 ? "" : "s"}`;
 
 /**
  * Speakers (browsers listening on /tv or /stream) the user owns, or every speaker for admins:
- * volume, mute, "Lock local controls", names and co-owners, one at a time or in bulk.
+ * volume, mute, "Lock local controls", names and co-owners, one at a time or in bulk. Admins see
+ * only their own speakers until they switch on "All speakers", and can claim any speaker or
+ * assign it to anyone without scanning.
  */
 export function SpeakersTab({ me }: { me: User }) {
   const [speakers, setSpeakers] = useState<Speaker[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [sharing, setSharing] = useState<{ ids: string[]; mode: ShareMode } | null>(null);
+  const [assigning, setAssigning] = useState<string[] | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [confirmDialog, confirm] = useConfirm();
   const [params, setParams] = useSearchParams();
   const shareToken = params.get("share");
@@ -51,15 +55,20 @@ export function SpeakersTab({ me }: { me: User }) {
     return () => window.clearInterval(t);
   }, []);
 
-  // Drop selections of speakers that went away.
+  const all = speakers ?? [];
+  // Admins see only their own speakers unless "All speakers" is on.
+  const filtered = me.is_admin && !showAll;
+  const list = useMemo(() => (filtered ? all.filter((s) => s.mine) : all), [all, filtered]);
+
+  // Drop selections of speakers that went away (or are filtered out).
   useEffect(() => {
     if (!speakers) return;
     setSelected((sel) => {
-      const ids = new Set(speakers.map((s) => s.id));
+      const ids = new Set(list.map((s) => s.id));
       const next = new Set([...sel].filter((id) => ids.has(id)));
       return next.size === sel.size ? sel : next;
     });
-  }, [speakers]);
+  }, [speakers, list]);
 
   const merge = (updated: Speaker[]) => {
     seq.current++;
@@ -148,10 +157,25 @@ export function SpeakersTab({ me }: { me: User }) {
     }
   };
 
-  const list = speakers ?? [];
-  const mine = useMemo(() => list.filter((s) => s.mine), [list]);
+  const claim = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    setBusy(true);
+    try {
+      const r = await api.assignSpeakers(ids, me.id);
+      merge(r.speakers);
+      flash.ok(`Claimed ${plural(r.speakers.length)}`);
+    } catch (e) {
+      flash.err(e);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const mine = useMemo(() => all.filter((s) => s.mine), [all]);
   const selectedSpeakers = list.filter((s) => selected.has(s.id));
   const selIds = selectedSpeakers.map((s) => s.id);
+  const selNotMine = selectedSpeakers.filter((s) => !s.mine).map((s) => s.id);
   const allSelected = list.length > 0 && selected.size === list.length;
   const someSelected = selected.size > 0 && !allSelected;
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(list.map((s) => s.id)));
@@ -171,7 +195,7 @@ export function SpeakersTab({ me }: { me: User }) {
     };
   };
   const mineMute = muteAction(mine, "my speakers");
-  const allMute = muteAction(list, "all");
+  const allMute = muteAction(all, "all");
 
   const selAllLocked = selectedSpeakers.length > 0 && selectedSpeakers.every((s) => s.locked);
   const selVolume = selectedSpeakers.length
@@ -189,15 +213,26 @@ export function SpeakersTab({ me }: { me: User }) {
     <div className="page page--speakers">
       <PageHeader
         title={me.is_admin ? "Speakers" : "My speakers"}
-        sub="Devices listening on the TV screen or the Listen page. Scan a speaker's code to add it."
+        sub={
+          me.is_admin
+            ? "Devices listening on the TV screen or the Listen page. Scan a speaker's code, or switch on “All speakers” to claim or assign any of them."
+            : "Devices listening on the TV screen or the Listen page. Scan a speaker's code to add it."
+        }
       >
+        {me.is_admin && (
+          <label className="switch-row switch-row--inline">
+            <input type="checkbox" role="switch" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+            <span className="switch" aria-hidden />
+            <span>All speakers{speakers ? ` (${all.length})` : ""}</span>
+          </label>
+        )}
         {mine.length > 0 && (
           <button className="btn btn--primary" disabled={busy} onClick={mineMute.run}>
             {mineMute.label.startsWith("Mute") ? <VolumeX size={18} aria-hidden /> : <Volume2 size={18} aria-hidden />}
             {mineMute.label}
           </button>
         )}
-        {me.is_admin && list.length > 0 && (
+        {me.is_admin && showAll && all.length > 0 && (
           <button className="btn" disabled={busy} onClick={allMute.run}>
             {allMute.label}
           </button>
@@ -208,8 +243,10 @@ export function SpeakersTab({ me }: { me: User }) {
         <div className="spinner" />
       ) : list.length === 0 ? (
         <p className="empty">
-          {me.is_admin
+          {me.is_admin && all.length === 0
             ? "No speakers yet. They appear here once a device listens on the TV screen or the Listen page."
+            : me.is_admin
+            ? `You haven't claimed any speakers. Switch on “All speakers” to see all ${plural(all.length)} and claim or assign them.`
             : "You don't have any speakers yet. Scan the QR code on a TV that's listening, or tap “Claim this speaker” on a phone's Listen page."}
         </p>
       ) : (
@@ -234,6 +271,8 @@ export function SpeakersTab({ me }: { me: User }) {
                 onPatch={(p) => patch(s, p)}
                 onRemoveOwner={(o) => removeOwner(s, o)}
                 onForget={() => forget(s)}
+                onClaim={() => void claim([s.id])}
+                onAssign={() => setAssigning([s.id])}
               />
             ))}
           </ul>
@@ -290,6 +329,16 @@ export function SpeakersTab({ me }: { me: User }) {
             <button className="btn btn--sm" disabled={busy} onClick={() => setSharing({ ids: selIds, mode: "handover" })}>
               Hand over
             </button>
+            {me.is_admin && selNotMine.length > 0 && (
+              <button className="btn btn--sm" disabled={busy} onClick={() => void claim(selNotMine)}>
+                Claim
+              </button>
+            )}
+            {me.is_admin && (
+              <button className="btn btn--sm" disabled={busy} onClick={() => setAssigning(selIds)}>
+                <UserPlus size={14} aria-hidden /> Assign
+              </button>
+            )}
           </div>
           <button className="icon-btn bulk-bar__clear" onClick={() => setSelected(new Set())} aria-label="Clear selection" title="Clear selection">
             <X size={18} />
@@ -297,6 +346,16 @@ export function SpeakersTab({ me }: { me: User }) {
         </div>
       )}
 
+      {assigning && (
+        <AssignDialog
+          ids={assigning}
+          me={me}
+          onClose={(updated) => {
+            setAssigning(null);
+            if (updated) merge(updated);
+          }}
+        />
+      )}
       {sharing && <ShareDialog ids={sharing.ids} mode={sharing.mode} onClose={() => setSharing(null)} />}
       {shareToken && <AcceptShareDialog key={shareToken} token={shareToken} onDone={finishShare} />}
       {confirmDialog}
@@ -315,6 +374,8 @@ function SpeakerRow({
   onPatch,
   onRemoveOwner,
   onForget,
+  onClaim,
+  onAssign,
 }: {
   s: Speaker;
   me: User;
@@ -326,6 +387,8 @@ function SpeakerRow({
   onPatch: (p: { name?: string; locked?: boolean }) => void;
   onRemoveOwner: (o: { id: number; name: string }) => void;
   onForget: () => void;
+  onClaim: () => void;
+  onAssign: () => void;
 }) {
   const canManageOwners = s.mine || me.is_admin;
   return (
@@ -383,10 +446,22 @@ function SpeakerRow({
               </span>
             ))
           )}
-          {me.is_admin && !s.connected && (
-            <button type="button" className="btn btn--danger-ghost btn--sm srow__forget" onClick={onForget}>
-              <Trash2 size={14} aria-hidden /> Forget
-            </button>
+          {me.is_admin && (
+            <span className="srow__admin">
+              {!s.mine && (
+                <button type="button" className="btn btn--ghost btn--sm" onClick={onClaim} aria-label={`Claim ${s.name}`}>
+                  Claim
+                </button>
+              )}
+              <button type="button" className="btn btn--ghost btn--sm" onClick={onAssign} aria-label={`Assign ${s.name} to someone`}>
+                <UserPlus size={14} aria-hidden /> Assign
+              </button>
+              {!s.connected && (
+                <button type="button" className="btn btn--danger-ghost btn--sm" onClick={onForget}>
+                  <Trash2 size={14} aria-hidden /> Forget
+                </button>
+              )}
+            </span>
           )}
         </div>
       </div>

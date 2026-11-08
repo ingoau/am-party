@@ -5,7 +5,8 @@
   ever sent by the device itself; owner/admin APIs use an opaque public ``id``.
 * Anyone with ``claim_speakers`` can claim a connected speaker by scanning its QR code
   (a claim token that rotates every time the speaker connects). Owners are equal
-  co-owners; admins see and control every speaker.
+  co-owners; admins see and control every speaker, and can make anyone (themselves
+  included) a co-owner without scanning.
 * Volume, mute and "lock local controls" are stored here and reapplied when a speaker
   reconnects. Local changes on the device win (last change wins) unless it is locked,
   in which case the stored values are pushed straight back.
@@ -523,6 +524,27 @@ class SpeakerManager:
         views = await self.list_for(user)
         wanted = set(ids)
         return [v for v in views if v["id"] in wanted]
+
+    async def assign(self, user: User, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Admin only: add a user (yourself = claim without scanning) as a co-owner of speakers."""
+        if not user.is_admin:
+            raise ApiError(403, "Only admins can assign speakers")
+        ids = _ids(data)
+        uid = data.get("user_id")
+        if isinstance(uid, bool) or not isinstance(uid, int):
+            raise ApiError(400, "user_id must be a user id")
+        async with self._lock:
+            await self._accessible(user, ids)
+            async with self.db.transaction():
+                # checked inside the transaction so the user can't be deleted in between
+                if await self.db.fetchone("SELECT 1 AS x FROM users WHERE id=?", uid) is None:
+                    raise ApiError(404, "User not found")
+                for sid in ids:
+                    await self._add_owner(sid, uid)
+        for sid in ids:
+            self._changed(sid, device=True)
+        wanted = set(ids)
+        return [v for v in await self.list_for(user) if v["id"] in wanted]
 
     async def remove_owner(self, user: User, sid: str, user_id: int) -> dict[str, Any] | None:
         async with self._lock:
