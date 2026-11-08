@@ -39,6 +39,9 @@ function friendlyError(e: unknown): string {
 export function RequestPage() {
   const { state, clockOffset } = useLive();
   const np = state?.now_playing ?? null;
+  // Arrived via a speaker's QR (/?speaker=<claim token>): tag requests with it so hosts see the
+  // source. Read once, since dismissing the claim prompt strips it from the URL.
+  const [speakerToken] = useState(() => new URLSearchParams(window.location.search).get("speaker"));
   useAccentVars(useArtworkColor(artworkAt(np?.artwork_url, 200))); // same size as the now-playing <Artwork>
 
   const [tab, setTab] = useState<Tab>("search");
@@ -125,7 +128,7 @@ export function RequestPage() {
   const doRequest = async (t: Track) => {
     setPendingTrack(t.id);
     try {
-      const { request } = await api.createRequest(t.id);
+      const { request } = await api.createRequest(t.id, speakerToken);
       mineSeq.current++;
       setMine((m) => [request, ...m.filter((x) => x.id !== request.id)]);
       // Trust the server's answer first: with approval off it comes back already approved.

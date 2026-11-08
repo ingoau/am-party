@@ -40,6 +40,7 @@ DEFAULT_NAME = "Speaker"
 DEFAULT_VOLUME = 80  # assumed for a relative change on a speaker that never reported one
 SHARE_TTL = 600.0
 MAX_SHARES = 500
+MAX_REQUEST_SOURCES = 2000  # rotated claim tokens remembered for tagging requests
 MAX_IDS = 200
 # How long to wait for a (re)connected speaker to accept volume commands before giving up.
 SYNC_TIMEOUT = 8.0
@@ -129,6 +130,9 @@ class SpeakerManager:
         self._live: dict[str, _Live] = {}  # speaker id -> live connection
         self._by_client: dict[str, str] = {}  # client_id -> speaker id (connected only)
         self._claims: dict[str, str] = {}  # claim token -> speaker id
+        # Every claim token handed out this run -> speaker id, kept after it rotates so guests
+        # who scanned an older QR still tag their requests with that speaker (oldest dropped).
+        self._sources: dict[str, str] = {}
         self._shares: dict[str, Share] = {}
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -266,6 +270,9 @@ class SpeakerManager:
             self._live[sid] = live
             self._by_client[client_id] = sid
             self._claims[live.claim_token] = sid
+            self._sources[live.claim_token] = sid
+            while len(self._sources) > MAX_REQUEST_SOURCES:
+                del self._sources[next(iter(self._sources))]
             live.sync_task = self._spawn(self._sync(sid, live))
         self._changed(sid, device=True)
 
@@ -442,6 +449,13 @@ class SpeakerManager:
         if sid is None or sid not in self._live:
             raise ApiError(404, "That speaker code has expired. Scan the speaker again.")
         return sid
+
+    def speaker_for_token(self, token: Any) -> str | None:
+        """The speaker a claim token (current or rotated, from its QR) belongs to, or None.
+
+        Only used to tag requests with their source: unlike claiming, an old token still counts.
+        """
+        return self._sources.get(token) if isinstance(token, str) else None
 
     async def claim_preview(self, user: User, token: Any) -> dict[str, Any]:
         sid = self._claim_target(token)

@@ -212,7 +212,9 @@ export function RequestsTab() {
               wrap
               meta={
                 <span className="muted">
-                  {r.guest_label ? `${r.guest_label} · ` : ""}{timeAgo(r.created_at, clockOffset)}
+                  {r.guest_label ? `${r.guest_label} · ` : ""}
+                  {r.speaker ? `via ${r.speaker} · ` : ""}
+                  {timeAgo(r.created_at, clockOffset)}
                   {r.decided_by && r.status !== "pending" ? ` · by ${r.decided_by}` : ""}
                 </span>
               }

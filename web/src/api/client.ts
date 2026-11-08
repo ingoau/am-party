@@ -84,7 +84,8 @@ export const api = {
   state: () => request<State>("GET", "/api/state"),
   search: (q: string, signal?: AbortSignal) =>
     request<{ tracks: Track[] }>("GET", `/api/search?q=${enc(q)}`, undefined, signal),
-  createRequest: (track_id: string) => request<{ request: SongRequest }>("POST", "/api/requests", { track_id }),
+  createRequest: (track_id: string, speaker?: string | null) =>
+    request<{ request: SongRequest }>("POST", "/api/requests", speaker ? { track_id, speaker } : { track_id }),
   withdrawRequest: (id: number) => command("DELETE", `/api/requests/${id}`),
   myRequests: () => request<{ requests: SongRequest[] }>("GET", "/api/requests/mine"),
   me: () => request<Me>("GET", "/api/me"),

@@ -127,6 +127,11 @@ async def test_identity_and_claim(env: Any) -> None:
     assert (await mgr.device_view(CID_A))["claim_token"] is None
     again = await connect(mgr, out, CID_A, "Kitchen")
     assert again["id"] == me["id"] and again["claim_token"] != token
+    # request sources: rotated tokens still tag requests (unlike claiming)
+    assert mgr.speaker_for_token(again["claim_token"]) == me["id"]
+    assert mgr.speaker_for_token(token) == me["id"]
+    assert mgr.speaker_for_token("nope") is None
+    assert mgr.speaker_for_token(None) is None and mgr.speaker_for_token(123) is None
     with pytest.raises(ApiError):
         await mgr.claim(user(1), token)
 
