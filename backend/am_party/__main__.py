@@ -18,7 +18,15 @@ def main() -> None:
     )
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     config = load_config()
-    web.run_app(create_app(config), host=config.host, port=config.port, access_log=None)
+    web.run_app(
+        create_app(config),
+        host=config.host,
+        port=config.port,
+        access_log=None,
+        # handlers still running this long after SIGTERM are cancelled; stays well
+        # under Docker's 10 s stop grace period so cleanup always gets to run
+        shutdown_timeout=3,
+    )
 
 
 if __name__ == "__main__":
