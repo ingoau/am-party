@@ -218,6 +218,8 @@
 /* ---------- Right panel (glass is fine here: it sits over the artwork backdrop) ---------- */
 .tv__panel {
   min-height: 0;
+  /* A little shorter than the stage, so it doesn't run edge to edge. */
+  margin-block: calc(40 * var(--u));
   display: flex;
   flex-direction: column;
   padding: calc(40 * var(--u));
@@ -301,7 +303,6 @@
   flex: none;
 }
 .cu__list {
-  position: relative;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -320,13 +321,6 @@
   flex: none;
   animation: fade-in 250ms ease-out backwards;
 }
-.cu__probe {
-  position: absolute;
-  inset: 0 0 auto 0;
-  visibility: hidden;
-  pointer-events: none;
-  animation: none;
-}
 .cu__row--dim {
   opacity: 0.7;
 }
@@ -334,8 +328,11 @@
 .cu__list--short {
   flex: none;
 }
-.cu__list--short .cu__more {
-  display: none;
+/* More queued than fits: the list fades out instead of cutting off. */
+.cu__list--fade {
+  --cu-fade: calc(160 * var(--u));
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--cu-fade)), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--cu-fade)), transparent);
 }
 .cu__thumb {
   flex: none;
@@ -375,19 +372,12 @@
   font-size: calc(26 * var(--u));
   color: var(--tv-muted);
 }
-.cu__more,
 .cu__empty,
 .cu__hint {
   flex: none;
   font-size: calc(24 * var(--u));
   font-weight: 500;
   color: var(--tv-muted);
-}
-.cu__more {
-  padding-left: calc(104 * var(--u));
-}
-.cu__more.is-hidden {
-  visibility: hidden;
 }
 .cu__empty {
   font-size: calc(28 * var(--u));
@@ -684,6 +674,7 @@
 
   .tv__panel {
     width: 100%;
+    margin-block: 0;
     padding: var(--space-5);
     border-radius: var(--radius);
   }
@@ -739,16 +730,12 @@
   .cu__artist {
     font-size: var(--fs-1);
   }
-  .cu__more,
   .cu__empty,
   .cu__hint {
     font-size: var(--fs-1);
   }
-  .cu__more {
-    padding-left: 60px;
-  }
-  .cu__more.is-hidden {
-    display: none;
+  .cu__list--fade {
+    --cu-fade: 72px;
   }
   .cu__empty {
     font-size: var(--fs-2);

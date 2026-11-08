@@ -24,8 +24,9 @@ const ARM_MS = 300;
 const FADE_MS = 600;
 /** Phone / portrait: the stacked layout (keep in sync with the media query in tv.css). */
 const STACKED_MQ = "(max-width: 699px), (orientation: portrait)";
-/** Most rows the "Coming up" list ever shows (TV); phones show at most this many too. */
-const MAX_ROWS = 8;
+/** Most rows the "Coming up" list renders on the TV; whatever doesn't fit fades out at the bottom. */
+const MAX_ROWS = 12;
+/** Phones show at most this many; the last one fades out when the queue is longer. */
 const MAX_ROWS_STACKED = 6;
 
 export function TvPage() {
@@ -298,7 +299,7 @@ function RequestCta({
   );
 }
 
-/** "Coming up": as many whole rows as fit (no half rows), then "+N more". */
+/** "Coming up": the queue, fading out at the bottom when it runs past what fits. */
 const ComingUp = memo(function ComingUp({
   upcoming,
   fallback,
@@ -311,48 +312,31 @@ const ComingUp = memo(function ComingUp({
   emptyText: string;
 }) {
   const listRef = useRef<HTMLOListElement>(null);
-  const probeRef = useRef<HTMLLIElement>(null);
-  const moreRef = useRef<HTMLLIElement>(null);
-  const n = Math.min(upcoming.length, stacked ? MAX_ROWS_STACKED : MAX_ROWS);
-  const [fit, setFit] = useState(n);
+  const shown = upcoming.slice(0, stacked ? MAX_ROWS_STACKED : MAX_ROWS);
+  const truncated = upcoming.length > shown.length;
+  const [overflowing, setOverflowing] = useState(false);
 
   useLayoutEffect(() => {
     const list = listRef.current;
-    const probe = probeRef.current;
-    const more = moreRef.current;
-    if (!list || !probe || !more) return;
-    const measure = () => {
-      if (stacked) return setFit(n);
-      const avail = list.clientHeight;
-      const rowH = probe.offsetHeight;
-      const gap = parseFloat(getComputedStyle(list).rowGap) || 0;
-      if (!rowH) return setFit(n);
-      // Everything fits (the "+N more" line is only needed when truncating).
-      if (n * rowH + Math.max(0, n - 1) * gap <= avail + 0.5 && n === upcoming.length) return setFit(n);
-      setFit(Math.max(0, Math.min(n, Math.floor((avail - more.offsetHeight + 0.5) / (rowH + gap)))));
-    };
+    if (!list || stacked) return setOverflowing(false);
+    const measure = () => setOverflowing(list.scrollHeight > list.clientHeight + 1);
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(list);
-    ro.observe(probe);
     return () => ro.disconnect();
-  }, [n, stacked, upcoming.length]);
-
-  const shown = upcoming.slice(0, Math.min(fit, n));
-  const more = upcoming.length - shown.length;
+  }, [stacked, shown.length]);
 
   return (
     <div className="cu">
       <h2 className="cu__heading">Coming up</h2>
-      <ol className={cx("cu__list", upcoming.length === 0 && "cu__list--short")} ref={listRef}>
-        {/* Invisible row used to measure how many rows fit. */}
-        <li className="cu__row cu__probe" ref={probeRef} aria-hidden>
-          <span className="cu__thumb" />
-          <span className="cu__text">
-            <span className="cu__title">Probe</span>
-            <span className="cu__artist">Probe</span>
-          </span>
-        </li>
+      <ol
+        className={cx(
+          "cu__list",
+          upcoming.length === 0 && "cu__list--short",
+          (overflowing || truncated) && "cu__list--fade",
+        )}
+        ref={listRef}
+      >
         {shown.map((q) => (
           <Row key={q.id} track={q.track} />
         ))}
@@ -362,9 +346,6 @@ const ComingUp = memo(function ComingUp({
           ) : (
             <li className="cu__empty">{emptyText}</li>
           ))}
-        <li className={cx("cu__more", more <= 0 && "is-hidden")} ref={moreRef} aria-hidden={more <= 0}>
-          +{Math.max(1, more)} more
-        </li>
       </ol>
       {upcoming.length === 0 && fallback && <p className="cu__hint">{emptyText}</p>}
     </div>
