@@ -271,6 +271,7 @@ export function SpeakersTab({ me }: { me: User }) {
                 onPatch={(p) => patch(s, p)}
                 onRemoveOwner={(o) => removeOwner(s, o)}
                 onForget={() => forget(s)}
+                busy={busy}
                 onClaim={() => void claim([s.id])}
                 onAssign={() => setAssigning([s.id])}
               />
@@ -374,6 +375,7 @@ function SpeakerRow({
   onPatch,
   onRemoveOwner,
   onForget,
+  busy,
   onClaim,
   onAssign,
 }: {
@@ -387,6 +389,7 @@ function SpeakerRow({
   onPatch: (p: { name?: string; locked?: boolean }) => void;
   onRemoveOwner: (o: { id: number; name: string }) => void;
   onForget: () => void;
+  busy: boolean;
   onClaim: () => void;
   onAssign: () => void;
 }) {
@@ -449,11 +452,11 @@ function SpeakerRow({
           {me.is_admin && (
             <span className="srow__admin">
               {!s.mine && (
-                <button type="button" className="btn btn--ghost btn--sm" onClick={onClaim} aria-label={`Claim ${s.name}`}>
+                <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={onClaim} aria-label={`Claim ${s.name}`}>
                   Claim
                 </button>
               )}
-              <button type="button" className="btn btn--ghost btn--sm" onClick={onAssign} aria-label={`Assign ${s.name} to someone`}>
+              <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={onAssign} aria-label={`Assign ${s.name} to someone`}>
                 <UserPlus size={14} aria-hidden /> Assign
               </button>
               {!s.connected && (

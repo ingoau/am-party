@@ -4,7 +4,7 @@ import { Copy, Search } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { ShareMode, Speaker, SpeakerShare, SpeakerSharePreview, User } from "../../api/types";
 import { QrCode } from "../../components/QrCode";
-import { useLive } from "../../hooks/live";
+import { useLive, useLiveEvent } from "../../hooks/live";
 import { errorText, flash } from "./common";
 
 const plural = (n: number) => `${n} speaker${n === 1 ? "" : "s"}`;
@@ -205,6 +205,9 @@ export function AssignDialog({
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Refetched when users change (e.g. one is deleted while the dialog is open).
+  const [usersRev, setUsersRev] = useState(0);
+  useLiveEvent("users_changed", () => setUsersRev((n) => n + 1));
   useEffect(() => {
     let alive = true;
     api.users().then(
@@ -214,14 +217,20 @@ export function AssignDialog({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [usersRev]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLocaleLowerCase();
     const label = (u: User) => u.name || u.email || "";
     return (users ?? [])
       .filter((u) => !q || label(u).toLocaleLowerCase().includes(q) || (u.email ?? "").toLocaleLowerCase().includes(q))
-      .sort((a, b) => Number(b.id === me.id) - Number(a.id === me.id) || label(a).localeCompare(label(b)));
+      // you first, then people who can open Speakers, then everyone else
+      .sort(
+        (a, b) =>
+          Number(b.id === me.id) - Number(a.id === me.id) ||
+          Number(b.permissions.includes("claim_speakers")) - Number(a.permissions.includes("claim_speakers")) ||
+          label(a).localeCompare(label(b)),
+      );
   }, [users, query, me.id]);
 
   const assign = async (u: User) => {
@@ -233,6 +242,7 @@ export function AssignDialog({
     } catch (e) {
       flash.err(e);
       setBusy(false);
+      if (e instanceof ApiError && e.status === 404) setUsersRev((n) => n + 1);
     }
   };
 
