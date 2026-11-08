@@ -8,7 +8,7 @@ import { cx, timeAgo } from "../../util";
 import { initials } from "./AdminApp";
 import { Checkbox, PageHeader, flash } from "./common";
 import { useConfirm } from "./ConfirmDialog";
-import { PRESETS, groupCatalog, usePermissionCatalog, type PermissionGroup, type Preset } from "./permissions";
+import { APPROVE_PRESET, PRESETS, ROLE_LABELS, groupCatalog, usePermissionCatalog, type PermissionGroup, type Preset } from "./permissions";
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -341,7 +341,7 @@ function UserRow({
       </div>
       {waiting && (
         <div className="urow__quick">
-          <button type="button" className="btn btn--sm" onClick={() => onPreset(PRESETS[0])} title={PRESETS[0].description} aria-label={`Approve ${u.name}`}>
+          <button type="button" className="btn btn--sm" onClick={() => onPreset(APPROVE_PRESET)} title={APPROVE_PRESET.description} aria-label={`Approve ${u.name}`}>
             Approve
           </button>
         </div>
@@ -410,7 +410,10 @@ function roleOf(u: User): { label: string; className: string } {
   if (u.is_admin) return { label: "Admin", className: "role-btn--admin" };
   if (u.granted.length === 0) return { label: "No access", className: "role-btn--none" };
   const set = new Set(u.granted);
-  const matched = PRESETS.filter((p) => p.permissions.every((x) => set.has(x)));
+  // Prefer the widest bundles, so "Approver" isn't also shown as "Request approver".
+  const matched = ROLE_LABELS.filter((p) => p.permissions.every((x) => set.has(x))).filter(
+    (p, _, all) => !all.some((q) => q !== p && q.permissions.length > p.permissions.length && p.permissions.every((x) => q.permissions.includes(x))),
+  );
   const covered = new Set(matched.flatMap((p) => p.permissions));
   if (matched.length && u.granted.every((x) => covered.has(x))) return { label: matched.map((p) => p.label).join(" + "), className: "role-btn--role" };
   return { label: `Custom · ${u.granted.length}`, className: "role-btn--role" };

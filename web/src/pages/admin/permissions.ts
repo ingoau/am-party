@@ -20,14 +20,27 @@ export const FALLBACK_CATALOG: PermissionInfo[] = [
 
 export type Preset = { id: string; label: string; description: string; permissions: Permission[] };
 
-/** The access granted by the one-tap "Approve" button for someone waiting for access. */
-export const PRESETS: Preset[] = [
+/** What the one-tap "Approve" button grants someone waiting for access. */
+export const APPROVE_PRESET: Preset = {
+  id: "approver",
+  label: "Approver",
+  description: "Approve requests, add to the queue, skip songs and claim speakers",
+  permissions: ["approve_requests", "queue_add", "playback_skip", "claim_speakers"],
+};
+
+/** Presets offered in the permission menus. */
+export const PRESETS: Preset[] = [APPROVE_PRESET];
+
+/** Bundles granted by earlier versions, still named so those users don't show as "Custom". */
+export const ROLE_LABELS: Preset[] = [
+  ...PRESETS,
   {
-    id: "approver",
-    label: "Approver",
-    description: "Approve requests, add to the queue, skip songs and claim speakers",
-    permissions: ["approve_requests", "queue_add", "playback_skip", "claim_speakers"],
+    id: "dj",
+    label: "DJ",
+    description: "Add, reorder and remove songs; skip and pause",
+    permissions: ["queue_add", "queue_reorder", "queue_remove", "playback_skip", "playback_pause"],
   },
+  { id: "approve-only", label: "Request approver", description: "Approve or reject guest requests", permissions: ["approve_requests"] },
 ];
 
 export type PermissionGroup = { name: string; items: PermissionInfo[] };
