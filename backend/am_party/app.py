@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import secrets
@@ -147,6 +148,15 @@ class AmParty:
         await worker.start()
         if not worker.available:
             self.smartfades_error = worker.error
+
+    async def close_client_sockets(self) -> None:
+        """Close every browser websocket concurrently, giving each a moment to ack."""
+
+        async def close(ws: web.WebSocketResponse) -> None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(ws.close(code=1001, message=b"server restarting"), 1)
+
+        await asyncio.gather(*(close(ws) for ws in list(self.hub.clients)))
 
     async def stop(self) -> None:
         # cancel and *await* background work before tearing down what it uses
@@ -325,9 +335,16 @@ def create_app(config: Config) -> web.Application:
     async def on_startup(_: web.Application) -> None:
         await am_party.start()
 
+    async def on_shutdown(_: web.Application) -> None:
+        # aiohttp waits (up to shutdown_timeout) for open handlers before on_cleanup,
+        # and websocket handlers only return once their socket closes: close them now
+        # so a connected browser doesn't hold up (or SIGKILL) a container stop.
+        await am_party.close_client_sockets()
+
     async def on_cleanup(_: web.Application) -> None:
         await am_party.stop()
 
     app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
     app.on_cleanup.append(on_cleanup)
     return app

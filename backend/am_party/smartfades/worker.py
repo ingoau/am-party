@@ -90,6 +90,12 @@ class AnalysisWorker:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._idle_task
             self._idle_task = None
+        # The lock is held for a whole model load or track analysis; kill the child
+        # first so the holder fails fast instead of making shutdown wait it out.
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
         async with self._lock:
             await self._kill_child()
 
