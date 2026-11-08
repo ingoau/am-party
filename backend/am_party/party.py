@@ -549,7 +549,8 @@ class Party:
         auto = not s.get("require_approval", True)
         rid = await self.db.execute(
             "INSERT INTO requests(track_id, track, guest_id, status, created_at, decided_at, speaker_id) "
-            "VALUES(?,?,?,?,?,?,?)",
+            # the speaker may have been forgotten since its token was resolved
+            "VALUES(?,?,?,?,?,?,(SELECT id FROM speakers WHERE id=?))",
             track.id,
             json.dumps(track.to_dict()),
             guest_id,
@@ -704,8 +705,9 @@ class Party:
                     await self._insert_queue(track, "request", position, request_id=rid, user=user)
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         out = await self.db.fetchone(
-            "SELECT r.*, u.name AS decider_name FROM requests r "
-            "LEFT JOIN users u ON u.id = r.decided_by WHERE r.id=?",
+            "SELECT r.*, u.name AS decider_name, sp.name AS speaker_name FROM requests r "
+            "LEFT JOIN users u ON u.id = r.decided_by "
+            "LEFT JOIN speakers sp ON sp.id = r.speaker_id WHERE r.id=?",
             rid,
         )
         assert out

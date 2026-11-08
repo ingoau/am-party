@@ -54,6 +54,7 @@ type Request = {
   decided_at: number | null;
   decided_by: string | null;    // user display name (admin views only)
   guest_label: string;          // short anonymised label e.g. "Guest 7F3A" (admin views only)
+  speaker?: string;             // name of the speaker whose QR the guest scanned; absent if none (admin views only)
 };
 
 type Permission = "approve_requests" | "queue_add" | "queue_reorder" | "queue_remove"
@@ -75,7 +76,7 @@ type User = {
 | GET | `/api/state` | `State` |
 | GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in users with `approve_requests` also get `{"type":"requests_changed"}`; all signed-in users get `{"type":"users_changed"}` (refetch `/api/me`, admins also the user list). Users with `claim_speakers` get `{"type":"speakers_changed"}` (refetch `/api/speakers`); everyone gets `{"type":"speaker_changed","id"}` when that speaker's name, lock, claim or claim code changes (the speaker refetches `/api/speaker/self`). Client may send `{"type":"ping"}`. |
 | GET | `/api/search?q=...` | `{tracks: Track[]}`. Rate limited per guest. 503 if Apple Music not configured. |
-| POST | `/api/requests` | body `{track_id}` (must come from a recent search). `201 {request: Request}`. 429 with `{error}` when rate limited or too many pending; 409 if already queued/pending; 403 if requests closed. Sets anonymous guest cookie. |
+| POST | `/api/requests` | body `{track_id, speaker?}`: `track_id` must come from a recent search; `speaker` is the claim token from `/?speaker=` when the guest arrived via a speaker's QR (unknown tokens are ignored, never an error). `201 {request: Request}`. 429 with `{error}` when rate limited or too many pending; 409 if already queued/pending; 403 if requests closed. Sets anonymous guest cookie. |
 | DELETE | `/api/requests/{id}` | guest withdraws their own request (pending, or approved and still queued but not yet being mixed in); 409 otherwise |
 | GET | `/api/requests/mine` | `{requests: Request[]}` for this browser (no admin fields) |
 | GET | `/api/me` | `{user: User \| null, oidc_enabled: boolean, oidc_name: string}` |
