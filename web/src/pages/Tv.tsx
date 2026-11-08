@@ -5,6 +5,7 @@ import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useAccentVars, useArtworkColor } from "../hooks/useArtworkColor";
 import { useIdle } from "../hooks/useIdle";
 import { useSendspin, type SendspinStatus } from "../hooks/useSendspin";
+import { fmtBitrate, fmtBytes, useSendspinTraffic } from "../hooks/sendspinTraffic";
 import { LiveProgress } from "../components/ProgressBar";
 import { LazyToaster } from "../components/lazyToast";
 import { QrCode } from "../components/QrCode";
@@ -539,6 +540,7 @@ function SettingsPopover({
 }) {
   const [name, setName] = useState(deviceName);
   const [delay, setDelay] = useState(String(syncDelay));
+  const traffic = useSendspinTraffic(open && status.listening);
   const ref = useRef<HTMLDivElement>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -674,6 +676,12 @@ function SettingsPopover({
               <span className="sync__label">{syncLabel(status)}</span>
             </div>
             {status.listening && status.codec && <div className="field__hint">Stream: {status.codec}{status.outputLatencyMs !== null ? ` · output latency ${Math.round(status.outputLatencyMs)} ms` : ""}</div>}
+            {status.listening && (
+              <div className="field__hint" title="Audio stream data received by this device since you tapped Listen">
+                Data received: {fmtBytes(traffic.bytes)}
+                {traffic.bytesPerSec !== null ? ` · ${fmtBitrate(traffic.bytesPerSec)}` : ""}
+              </div>
+            )}
           </form>
         </div>
       )}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SendspinPlayer } from "@sendspin/sendspin-js";
 import { lazyToast as toast } from "../components/lazyToast";
 import { storage } from "../util";
+import { installTrafficCounter, resetTraffic } from "./sendspinTraffic";
 
 const K_NAME = "am-party.deviceName";
 const K_VOL = "am-party.volume";
@@ -19,6 +20,7 @@ let sendspinLoad: Promise<SendspinModule> | null = null;
  * its AudioContext play.
  */
 export function preloadSendspin(): Promise<SendspinModule> {
+  installTrafficCounter(); // must wrap WebSocket before sendspin-js opens its socket
   sendspinLoad ??= import("@sendspin/sendspin-js").then(
     (m) => (sendspinMod = m),
     (e) => {
@@ -166,6 +168,8 @@ export function useSendspin() {
     if (playerRef.current) return;
     const session = ++sessionRef.current;
     const name = nameRef.current;
+    installTrafficCounter();
+    resetTraffic();
     setActiveName(name);
     setStatus({ ...OFF, listening: true, sync: "connecting" });
 
