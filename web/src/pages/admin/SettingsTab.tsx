@@ -209,6 +209,22 @@ export function SettingsTab() {
             <span className="field__hint">Leave blank to use the default text.</span>
           </section>
 
+          <section className="card">
+            <h2 className="card__title">Speakers</h2>
+            <label className="field">
+              <span className="field__label">Speaker naming notes</span>
+              <textarea
+                className="input"
+                rows={3}
+                value={draft.speaker_naming_notes ?? ""}
+                maxLength={1000}
+                onChange={(e) => set("speaker_naming_notes", e.target.value, 700)}
+                onBlur={() => void flush()}
+              />
+              <span className="field__hint">Shown when someone names a new speaker, e.g. naming conventions.</span>
+            </label>
+          </section>
+
           <FallbackCard draft={draft} set={set} />
 
           <section className="card">

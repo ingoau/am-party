@@ -407,6 +407,7 @@ class Party:
             "tv_cta_text": self._settings.get("tv_cta_text", ""),
             "tv_paused_text": self._settings.get("tv_paused_text", ""),
             "tv_empty_text": self._settings.get("tv_empty_text", ""),
+            "speaker_naming_notes": self._settings.get("speaker_naming_notes", ""),
         }
 
     def set_listeners(self, n: int) -> None:
@@ -888,6 +889,15 @@ class Party:
                 if val is not None and not isinstance(val, str):
                     raise ApiError(400, f"{key} must be a string or null")
                 val = " ".join((val or "").split())[:80]  # "" = built-in default
+            elif key == "speaker_naming_notes":
+                if val is not None and not isinstance(val, str):
+                    raise ApiError(400, f"{key} must be a string or null")
+                # keep line breaks (one blank line at most), trim each line
+                lines = [" ".join(ln.split()) for ln in (val or "").replace("\r", "").split("\n")]
+                val = "\n".join(lines)
+                while "\n\n\n" in val:
+                    val = val.replace("\n\n\n", "\n\n")
+                val = val.strip()[:1000]
             elif key in ("fallback_playlist_id", "fallback_playlist_name"):
                 if val is not None and not isinstance(val, str):
                     raise ApiError(400, f"{key} must be a string or null")

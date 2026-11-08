@@ -18,6 +18,7 @@ from .config import Config
 from .db import Database, now
 from .party import Hub, Party
 from .security import ConnectionCounter
+from .speakers import SpeakerManager
 from .player.engine import Engine
 from .player.prepare import TrackPreparer, dumps_analysis
 
@@ -40,6 +41,7 @@ class AmParty:
         self.apple: Any
         self.party: Party
         self.output: Any
+        self.speakers: SpeakerManager
         self.engine: Engine
         self.analysis_worker: Any = None
         self.smartfades_error: str | None = None
@@ -94,6 +96,11 @@ class AmParty:
             max_listeners=self.config.max_listeners,
         )
         self.output.on_listeners_changed = self.party.set_listeners
+        self.speakers = SpeakerManager(self.db, self.hub, self.output)
+        self.output.on_client_joined = self.speakers.on_client_joined
+        self.output.on_client_left = self.speakers.on_client_left
+        self.output.on_client_volume = self.speakers.on_client_volume
+        await self.speakers.start()
         await self.output.start()
 
         preparer = TrackPreparer(
@@ -154,6 +161,8 @@ class AmParty:
             await self.engine.preparer.close()  # kills ffmpeg, then deletes cache files
         if getattr(self, "output", None):
             await self.output.stop()
+        if getattr(self, "speakers", None):
+            await self.speakers.close()
         if self.analysis_worker:
             await self.analysis_worker.stop()
         for ws in list(self.hub.clients):

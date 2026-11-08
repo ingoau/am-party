@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, Minus, Trash2, X } from "lucide-react";
+import { ChevronDown, Trash2, X } from "lucide-react";
 import { api } from "../../api/client";
 import { ALL_PERMISSIONS, type Permission, type PermissionInfo, type User } from "../../api/types";
 import { useLiveEvent } from "../../hooks/live";
 import { cx, timeAgo } from "../../util";
 import { initials } from "./AdminApp";
-import { PageHeader, flash } from "./common";
+import { Checkbox, PageHeader, flash } from "./common";
 import { useConfirm } from "./ConfirmDialog";
 import { PRESETS, groupCatalog, usePermissionCatalog, type PermissionGroup, type Preset } from "./permissions";
 
@@ -445,30 +445,6 @@ function PermSwitch({
   );
 }
 
-function Checkbox({
-  checked,
-  indeterminate,
-  onChange,
-  ...rest
-}: {
-  checked: boolean;
-  indeterminate?: boolean;
-  onChange: () => void;
-  "aria-label": string;
-}) {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = !!indeterminate;
-  }, [indeterminate]);
-  return (
-    <span className="check">
-      <input ref={ref} type="checkbox" checked={checked} onChange={onChange} {...rest} />
-      <span className="check__box" aria-hidden>
-        {indeterminate ? <Minus size={14} strokeWidth={3} /> : checked ? <Check size={14} strokeWidth={3} /> : null}
-      </span>
-    </span>
-  );
-}
 
 /** "What do these mean?" — labels + descriptions for every permission, usable on touch devices too. */
 function PermissionGuide({ groups }: { groups: PermissionGroup[] }) {

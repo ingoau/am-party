@@ -43,6 +43,8 @@ export type State = {
   tv_cta_text: string;
   tv_paused_text: string;
   tv_empty_text: string;
+  /** Shown when someone names a new speaker ("" = none). */
+  speaker_naming_notes: string;
 };
 
 export type RequestStatus = "pending" | "approved" | "rejected" | "withdrawn";
@@ -71,7 +73,8 @@ export type Permission =
   | "queue_reorder"
   | "queue_remove"
   | "playback_skip"
-  | "playback_pause";
+  | "playback_pause"
+  | "claim_speakers";
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
   "approve_requests",
@@ -80,6 +83,7 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "queue_remove",
   "playback_skip",
   "playback_pause",
+  "claim_speakers",
 ];
 
 /** Anything that unlocks the Queue tab. */
@@ -143,6 +147,7 @@ export type Settings = {
   crossfade_duration: number;
   max_pending_per_guest: number;
   request_cooldown_seconds: number;
+  speaker_naming_notes: string;
 };
 
 export type Playlist = { id: string; name: string; artwork_url: string | null };
@@ -169,8 +174,58 @@ export type AppleMusicStatus = {
   widevine: boolean;
 };
 
+export type SpeakerOwner = { id: number; name: string };
+
+/** A listening device (/tv or /stream), as its owners and admins see it. */
+export type Speaker = {
+  id: string;
+  name: string;
+  connected: boolean;
+  /** Unix seconds: last connect / disconnect / activity. */
+  last_seen: number | null;
+  /** 0-100; null = never reported. */
+  volume: number | null;
+  muted: boolean;
+  /** "Lock local controls": the device itself can't change volume, mute or name. */
+  locked: boolean;
+  owners: SpeakerOwner[];
+  /** The current user is a co-owner. */
+  mine: boolean;
+};
+
+/** What a device learns about itself (POST /api/speaker/self). */
+export type SpeakerSelf = {
+  id: string;
+  name: string;
+  /** false until a name was explicitly chosen (device prompt or owner rename). */
+  named: boolean;
+  locked: boolean;
+  claimed: boolean;
+  connected: boolean;
+  /** For the claim QR; null while not connected. */
+  claim_token: string | null;
+};
+
+export type SpeakerBrief = { id: string; name: string; connected: boolean };
+
+export type SpeakerControl = {
+  ids: string[];
+  volume?: number;
+  volume_delta?: number;
+  muted?: boolean;
+  locked?: boolean;
+};
+
+export type ShareMode = "share" | "handover";
+
+export type SpeakerShare = { token: string; expires_at: number; mode: ShareMode };
+
+export type SpeakerSharePreview = { mode: ShareMode; from: string; expires_at: number; speakers: SpeakerBrief[] };
+
 export type WsMessage =
   | { type: "state"; data: State }
   | { type: "requests_changed" }
   | { type: "users_changed" }
+  | { type: "speakers_changed" }
+  | { type: "speaker_changed"; id: string }
   | { type: "pong"; server_time: number };

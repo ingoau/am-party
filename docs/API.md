@@ -40,6 +40,7 @@ type State = {
   require_approval: boolean;    // false = guest requests go straight into the queue
   listeners: number;            // connected sendspin players
   public_url: string;           // configured public base URL (QR code target)
+  speaker_naming_notes: string; // admin notes shown when naming a new speaker ("" = none)
 };
 
 type Request = {
@@ -56,7 +57,7 @@ type Request = {
 };
 
 type Permission = "approve_requests" | "queue_add" | "queue_reorder" | "queue_remove"
-                | "playback_skip" | "playback_pause";
+                | "playback_skip" | "playback_pause" | "claim_speakers";
 
 type User = {
   id: number; email: string | null; name: string; picture: string | null;
@@ -72,7 +73,7 @@ type User = {
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/state` | `State` |
-| GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in users with `approve_requests` also get `{"type":"requests_changed"}`; all signed-in users get `{"type":"users_changed"}` (refetch `/api/me`, admins also the user list). Client may send `{"type":"ping"}`. |
+| GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in users with `approve_requests` also get `{"type":"requests_changed"}`; all signed-in users get `{"type":"users_changed"}` (refetch `/api/me`, admins also the user list). Users with `claim_speakers` get `{"type":"speakers_changed"}` (refetch `/api/speakers`); everyone gets `{"type":"speaker_changed","id"}` when that speaker's name, lock, claim or claim code changes (the speaker refetches `/api/speaker/self`). Client may send `{"type":"ping"}`. |
 | GET | `/api/search?q=...` | `{tracks: Track[]}`. Rate limited per guest. 503 if Apple Music not configured. |
 | POST | `/api/requests` | body `{track_id}` (must come from a recent search). `201 {request: Request}`. 429 with `{error}` when rate limited or too many pending; 409 if already queued/pending; 403 if requests closed. Sets anonymous guest cookie. |
 | DELETE | `/api/requests/{id}` | guest withdraws their own request (pending, or approved and still queued but not yet being mixed in); 409 otherwise |
@@ -82,6 +83,8 @@ type User = {
 | GET | `/auth/callback` | OIDC redirect target |
 | POST | `/auth/logout` | |
 | GET | `/sendspin` | WebSocket proxied to the Sendspin server (use as sendspin-js `baseUrl: location.origin`) |
+| POST | `/api/speaker/self` | the listening device itself: body `{client_id}` (its sendspin-js `clientId`, which works as its secret; never put it in a URL) → `SpeakerSelf`. 404 until the speaker has connected once |
+| POST | `/api/speaker/self/name` | body `{client_id, name}` (1-40 chars) → `SpeakerSelf`; 423 while the owner has locked local controls |
 
 Errors: non-2xx with `{error: string}`.
 
@@ -144,6 +147,45 @@ Each endpoint needs the permission shown (admins have all). 401 if signed out, 4
 | POST | `/api/admin/player/pause` / `/resume` | `playback_pause` | for every device |
 | GET | `/api/admin/permissions` | any signed-in | `{permissions: {id, label, description, group}[]}` catalog for the UI |
 
+### `claim_speakers`
+
+Speakers are browsers listening on `/tv` or `/stream`, identified by their Sendspin identity (stable
+across reconnects while the browser keeps its storage). Owners are equal co-owners; admins see and
+control every speaker. Volume, mute and the lock are stored and reapplied whenever a speaker
+reconnects; local changes on the device win unless it is locked. Unclaimed speakers offline for 30
+days are forgotten (and only the 300 most recently seen unclaimed ones are kept).
+
+```ts
+type Speaker = {
+  id: string; name: string;
+  connected: boolean; last_seen: number | null;
+  volume: number | null;        // 0-100, null until the speaker first reported one
+  muted: boolean;
+  locked: boolean;              // "Lock local controls"
+  owners: {id: number; name: string}[];
+  mine: boolean;
+};
+type SpeakerSelf = {
+  id: string; name: string;
+  named: boolean;               // a name was chosen deliberately (device or owner)
+  locked: boolean; claimed: boolean; connected: boolean;
+  claim_token: string | null;   // QR code: `${public_url}/?speaker=${claim_token}`; rotates on every connect
+};
+```
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/speakers` | `{speakers: Speaker[]}`: your speakers (admins: all), connected first |
+| GET | `/api/speakers/claim/{token}` | `{speaker: {id, name, connected}, already_mine}`; 404 if the code is stale |
+| POST | `/api/speakers/claim` | `{token}` → `{speaker}`; joins as a co-owner |
+| PATCH | `/api/speakers/{id}` | `{name?, locked?}` → `{speaker}` |
+| POST | `/api/speakers/control` | `{ids, volume? \| volume_delta?, muted?, locked?}` → `{speakers}`; `volume` sets every one to that level, `volume_delta` (-100..100) moves each by the same step; max 200 ids |
+| DELETE | `/api/speakers/{id}/owners/{user_id}` | any co-owner (or admin) removes any co-owner, yourself = leave → `{speaker \| null}` (null when you lost access) |
+| DELETE | `/api/speakers/{id}` | admin only: forget an offline speaker (409 while connected) |
+| POST | `/api/speakers/share` | `{ids, mode: "share" \| "handover"}` → `{token, expires_at, mode}`; single use, 10 minutes. Link: `${public_url}/admin/speakers?share=${token}` |
+| GET | `/api/speakers/share/{token}` | `{mode, from, expires_at, speakers: {id, name, connected}[]}`; only the speakers the sharer still controls (410 if none) |
+| POST | `/api/speakers/share/{token}/accept` | → `{speakers}`; adds you as a co-owner, and for `handover` removes the sharer |
+
 ### `admin`
 
 | Method | Path | Notes |
@@ -170,6 +212,7 @@ type Settings = {
   crossfade_duration: number;        // seconds, standard mode (1-15)
   max_pending_per_guest: number;
   request_cooldown_seconds: number;
+  speaker_naming_notes: string;      // up to 1000 chars, line breaks kept
 };
 ```
 

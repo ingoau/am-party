@@ -254,3 +254,49 @@ async def _produce(out, seconds: float) -> None:
 
     for i in range(int(seconds / 0.25)):
         await out.write(sine_pcm(0.25, start_frame=i * 12000))
+
+
+async def test_per_client_events_and_volume_commands() -> None:
+    from aiosendspin.models.types import PlayerCommand
+    from aiosendspin.noise.keys import Identity
+
+    async with Harness(buffer_ahead=1.0) as h:
+        joined: list[tuple[str, str]] = []
+        left: list[str] = []
+        reported: list[tuple[str, int, bool]] = []
+        h.out.on_client_joined = lambda cid, name: joined.append((cid, name))
+        h.out.on_client_left = left.append
+        h.out.on_client_volume = lambda cid, v, m: reported.append((cid, v, m))
+        ident = Identity.generate()
+        a = await make_client("Kitchen", h.url, h.session, identity=ident, commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE])
+        commands: list[object] = []
+        a.client.add_server_command_listener(commands.append)
+        cid = a.client._client_id  # noqa: SLF001
+        assert await wait_for(lambda: joined == [(cid, "Kitchen")])
+        assert await wait_for(lambda: (st := h.out.client_player_state(cid)) is not None and st[2])
+        assert cid in h.out.connected_player_ids()
+
+        assert h.out.set_client_volume(cid, 30, True)
+        assert await wait_for(lambda: len(commands) >= 2)
+        sent = {(c.player.command, c.player.volume, c.player.mute) for c in commands}  # type: ignore[attr-defined]
+        assert (PlayerCommand.VOLUME, 30, None) in sent and (PlayerCommand.MUTE, None, True) in sent
+
+        await a.client.send_player_state(available=True, volume=55, muted=False)
+        assert await wait_for(lambda: (cid, 55, False) in reported)
+
+        await a.client.disconnect()
+        assert await wait_for(lambda: left == [cid])
+        assert h.out.client_player_state(cid) is None
+        assert not h.out.set_client_volume(cid, 10)
+
+        # same identity => same client_id after a reconnect
+        b = await make_client("Kitchen", h.url, h.session, identity=ident, commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE])
+        assert b.client._client_id == cid  # noqa: SLF001
+        assert await wait_for(lambda: joined == [(cid, "Kitchen"), (cid, "Kitchen")])
+        # volume reports still arrive on the new connection (even if the library replaced
+        # the client object after the disconnect)
+        assert await wait_for(lambda: (st := h.out.client_player_state(cid)) is not None and st[2])
+        await b.client.send_player_state(available=True, volume=42, muted=True)
+        assert await wait_for(lambda: (cid, 42, True) in reported)
+        await b.client.disconnect()
+        assert await wait_for(lambda: left == [cid, cid])

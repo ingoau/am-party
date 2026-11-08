@@ -7,7 +7,14 @@ import type {
   PermissionInfo,
   Playlist,
   Settings,
+  ShareMode,
   SongRequest,
+  Speaker,
+  SpeakerBrief,
+  SpeakerControl,
+  SpeakerSelf,
+  SpeakerShare,
+  SpeakerSharePreview,
   State,
   Track,
   User,
@@ -82,6 +89,26 @@ export const api = {
   myRequests: () => request<{ requests: SongRequest[] }>("GET", "/api/requests/mine"),
   me: () => request<Me>("GET", "/api/me"),
   logout: () => command("POST", "/auth/logout"),
+
+  // This device as a speaker (client_id is the device's secret: body only, never the URL)
+  speakerSelf: (client_id: string) => request<SpeakerSelf>("POST", "/api/speaker/self", { client_id }),
+  renameSpeakerSelf: (client_id: string, name: string) =>
+    request<SpeakerSelf>("POST", "/api/speaker/self/name", { client_id, name }),
+
+  // Speaker owners (claim_speakers) and admins
+  speakers: () => request<{ speakers: Speaker[] }>("GET", "/api/speakers"),
+  claimPreview: (token: string) =>
+    request<{ speaker: SpeakerBrief; already_mine: boolean }>("GET", `/api/speakers/claim/${enc(token)}`),
+  claimSpeaker: (token: string) => request<{ speaker: Speaker }>("POST", "/api/speakers/claim", { token }),
+  patchSpeaker: (id: string, patch: { name?: string; locked?: boolean }) =>
+    request<{ speaker: Speaker }>("PATCH", `/api/speakers/${enc(id)}`, patch),
+  controlSpeakers: (body: SpeakerControl) => request<{ speakers: Speaker[] }>("POST", "/api/speakers/control", body),
+  removeSpeakerOwner: (id: string, userId: number) =>
+    request<{ speaker: Speaker | null }>("DELETE", `/api/speakers/${enc(id)}/owners/${userId}`),
+  forgetSpeaker: (id: string) => command("DELETE", `/api/speakers/${enc(id)}`),
+  shareSpeakers: (ids: string[], mode: ShareMode) => request<SpeakerShare>("POST", "/api/speakers/share", { ids, mode }),
+  sharePreview: (token: string) => request<SpeakerSharePreview>("GET", `/api/speakers/share/${enc(token)}`),
+  acceptShare: (token: string) => request<{ speakers: Speaker[] }>("POST", `/api/speakers/share/${enc(token)}/accept`),
 
   // Approvers
   adminRequests: (status: "pending" | "approved" | "rejected" | "all" = "pending", signal?: AbortSignal) =>

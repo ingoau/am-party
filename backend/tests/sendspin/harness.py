@@ -62,6 +62,7 @@ async def make_client(
     session: aiohttp.ClientSession,
     codec: AudioCodec = AudioCodec.PCM,
     identity: Identity | None = None,
+    commands: list[object] | None = None,
 ) -> ClientRecord:
     store = InMemoryClientPairingStore()
     client = RefClient(
@@ -78,6 +79,7 @@ async def make_client(
             buffer_capacity=4_000_000,
         ),
         session=session,
+        state_supported_commands=commands,  # type: ignore[arg-type]
     )
     await client.set_unpaired_access(enabled=True)
     rec = ClientRecord(name, client)
