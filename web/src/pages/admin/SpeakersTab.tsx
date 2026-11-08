@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { Lock, Minus, Pencil, Plus, Trash2, UserPlus, Volume2, VolumeX, X } from "lucide-react";
+import { Lock, Minus, Pencil, Plus, ScanQrCode, Trash2, UserPlus, Volume2, VolumeX, X } from "lucide-react";
 import { api } from "../../api/client";
 import type { ShareMode, Speaker, SpeakerControl, User } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
@@ -8,6 +8,7 @@ import { cx, timeAgo } from "../../util";
 import { Checkbox, PageHeader, flash } from "./common";
 import { useConfirm } from "./ConfirmDialog";
 import { AcceptShareDialog, AssignDialog, ShareDialog } from "./SpeakerDialogs";
+import { SpeakerScanner } from "./SpeakerScanner";
 
 /** −/+ in the bulk bar move every selected speaker by this much. */
 const VOLUME_STEP = 5;
@@ -29,6 +30,7 @@ export function SpeakersTab({ me }: { me: User }) {
   const [sharing, setSharing] = useState<{ ids: string[]; mode: ShareMode } | null>(null);
   const [assigning, setAssigning] = useState<string[] | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [confirmDialog, confirm] = useConfirm();
   const [params, setParams] = useSearchParams();
   const shareToken = params.get("share");
@@ -226,6 +228,10 @@ export function SpeakersTab({ me }: { me: User }) {
             <span>All speakers{speakers ? ` (${all.length})` : ""}</span>
           </label>
         )}
+        <button className="btn" onClick={() => setScanning(true)}>
+          <ScanQrCode size={18} aria-hidden />
+          Claim speakers
+        </button>
         {mine.length > 0 && (
           <button className="btn btn--primary" disabled={busy} onClick={mineMute.run}>
             {mineMute.label.startsWith("Mute") ? <VolumeX size={18} aria-hidden /> : <Volume2 size={18} aria-hidden />}
@@ -247,7 +253,7 @@ export function SpeakersTab({ me }: { me: User }) {
             ? "No speakers yet. They appear here once a device listens on the TV screen or the Listen page."
             : me.is_admin
             ? `You haven't claimed any speakers. Switch on “All speakers” to see all ${plural(all.length)} and claim or assign them.`
-            : "You don't have any speakers yet. Scan the QR code on a TV that's listening, or tap “Claim this speaker” on a phone's Listen page."}
+            : "You don't have any speakers yet. Tap “Claim speakers” and scan the QR code on a TV that's listening, or the one under “Claim this speaker” on a phone's Listen page."}
         </p>
       ) : (
         <div className="people">
@@ -358,6 +364,20 @@ export function SpeakersTab({ me }: { me: User }) {
         />
       )}
       {sharing && <ShareDialog ids={sharing.ids} mode={sharing.mode} onClose={() => setSharing(null)} />}
+      {scanning && (
+        <SpeakerScanner
+          onClose={() => {
+            setScanning(false);
+            load();
+          }}
+          onShare={(token) => {
+            setScanning(false);
+            const next = new URLSearchParams(params);
+            next.set("share", token);
+            setParams(next, { replace: true });
+          }}
+        />
+      )}
       {shareToken && <AcceptShareDialog key={shareToken} token={shareToken} onDone={finishShare} />}
       {confirmDialog}
     </div>
