@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS requests (
     auto_note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+CREATE INDEX IF NOT EXISTS idx_requests_guest ON requests(guest_id, created_at);
 
 CREATE TABLE IF NOT EXISTS queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,8 +122,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "fallback_shuffle": True,
     "crossfade_mode": "smart",  # smart | standard | off
     "crossfade_duration": 8,
-    "max_pending_per_guest": 3,
-    "request_cooldown_seconds": 20,
+    # Per-guest request budget: at most `requests` songs in any trailing `seconds`
+    # window. Every window applies; [] = no per-guest limit.
+    "request_rate_limits": [{"requests": 10, "seconds": 600}],
     "party_name": "Party",
     # TV screen copy; "" means the built-in default text.
     "tv_cta_text": "",
@@ -185,6 +187,10 @@ class Database:
                 await self.c.execute(
                     "UPDATE users SET permissions=? WHERE id=?", (json.dumps(sorted(perms)), row["id"])
                 )
+        # v3: the per-guest pending cap and cooldown became request_rate_limits.
+        await self.c.execute(
+            "DELETE FROM settings WHERE key IN ('max_pending_per_guest', 'request_cooldown_seconds')"
+        )
 
     async def close(self) -> None:
         if self.conn:

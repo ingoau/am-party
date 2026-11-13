@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api/client";
-import type { AdminStatus, AppleMusicStatus, AutoApprovalStatus, CrossfadeMode, JevProvider, Playlist, Settings } from "../../api/types";
+import type { AdminStatus, AppleMusicStatus, AutoApprovalStatus, CrossfadeMode, JevProvider, Playlist, RequestRateLimit, Settings } from "../../api/types";
 import { Artwork } from "../../components/Artwork";
 import { Check } from "lucide-react";
 import { TV_TEXT_DEFAULTS, cx, fmtDate } from "../../util";
@@ -16,10 +16,13 @@ const LOCAL_ONLY: (keyof Settings)[] = ["require_approval"];
 
 function diff(draft: Settings, saved: Settings): Partial<Settings> {
   const p: Partial<Settings> = {};
+  const same = (a: unknown, b: unknown) =>
+    a === b ||
+    (typeof a === "object" && typeof b === "object" && JSON.stringify(a) === JSON.stringify(b));
   (Object.keys(draft) as (keyof Settings)[]).forEach((k) => {
     if (LOCAL_ONLY.includes(k)) return; // applied immediately via its own endpoint (RequireApprovalSwitch)
     if (k === "party_name" && !draft.party_name.trim()) return; // never save an empty name
-    if (draft[k] !== saved[k]) (p as Record<string, unknown>)[k] = draft[k];
+    if (!same(draft[k], saved[k])) (p as Record<string, unknown>)[k] = draft[k];
   });
   return p;
 }
@@ -285,35 +288,7 @@ export function SettingsTab() {
             )}
           </section>
 
-          <section className="card">
-            <h2 className="card__title">Guest limits</h2>
-            <div className="field-row">
-              <label className="field">
-                <span className="field__label">Max waiting requests per guest</span>
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={draft.max_pending_per_guest}
-                  onChange={(e) => set("max_pending_per_guest", Math.max(1, Number(e.target.value) || 1), 700)}
-                  onBlur={() => void flush()}
-                />
-              </label>
-              <label className="field">
-                <span className="field__label">Cooldown between requests (s)</span>
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  max={3600}
-                  value={draft.request_cooldown_seconds}
-                  onChange={(e) => set("request_cooldown_seconds", Math.max(0, Number(e.target.value) || 0), 700)}
-                  onBlur={() => void flush()}
-                />
-              </label>
-            </div>
-          </section>
+          <GuestLimitsCard limits={draft.request_rate_limits} set={set} />
         </>
       )}
 
@@ -839,5 +814,103 @@ function StatusItem({ label, ok, text }: { label: string; ok: boolean; text: str
         <div className="status-item__text">{text}</div>
       </div>
     </div>
+  );
+}
+
+const RATE_LIMIT_UNITS = [
+  { seconds: 1, suffix: "seconds" },
+  { seconds: 60, suffix: "minutes" },
+  { seconds: 3600, suffix: "hours" },
+  { seconds: 86400, suffix: "days" },
+] as const;
+
+/** Show a stored period in its largest whole unit, e.g. 600 -> 10 minutes. */
+function periodParts(seconds: number): { amount: number; unit: number } {
+  for (const unit of [86400, 3600, 60]) {
+    if (seconds >= unit && seconds % unit === 0) return { amount: seconds / unit, unit };
+  }
+  return { amount: Math.max(1, seconds), unit: 1 };
+}
+
+/** Per-guest request budget: any number of stacked periods, each "N songs per M minutes". */
+function GuestLimitsCard({ limits, set }: { limits: RequestRateLimit[]; set: SetSetting }) {
+  const update = (next: RequestRateLimit[], debounceMs = 0) => set("request_rate_limits", next, debounceMs);
+  const patch = (i: number, changes: Partial<RequestRateLimit>, debounceMs = 0) =>
+    update(
+      limits.map((l, j) => (j === i ? { ...l, ...changes } : l)),
+      debounceMs,
+    );
+  return (
+    <section className="card">
+      <h2 className="card__title">Guest limits</h2>
+      <p className="field__hint">
+        How many songs one guest can request per period. Every period applies, so a short one and a long one
+        together allow bursts without letting a guest take over the queue. With no periods, guests can request
+        without limit.
+      </p>
+      {limits.map((limit, i) => {
+        const { amount, unit } = periodParts(limit.seconds);
+        return (
+          <div className="field-row" key={i}>
+            <label className="field">
+              <span className="field__label">Requests</span>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={1000}
+                value={limit.requests}
+                onChange={(e) =>
+                  patch(i, { requests: Math.min(1000, Math.max(1, Number(e.target.value) || 1)) }, 700)
+                }
+              />
+            </label>
+            <label className="field">
+              <span className="field__label">Per</span>
+              <div className="field-row">
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={Math.floor(604800 / unit)}
+                  value={amount}
+                  onChange={(e) =>
+                    patch(i, { seconds: Math.min(604800, Math.max(1, Number(e.target.value) || 1) * unit) }, 700)
+                  }
+                />
+                <select
+                  className="input"
+                  aria-label="Period unit"
+                  value={unit}
+                  onChange={(e) => patch(i, { seconds: Math.min(604800, amount * Number(e.target.value)) })}
+                >
+                  {RATE_LIMIT_UNITS.map((u) => (
+                    <option key={u.seconds} value={u.seconds}>
+                      {u.suffix}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
+            <button
+              className="btn btn--danger-ghost btn--sm"
+              type="button"
+              onClick={() => update(limits.filter((_, j) => j !== i))}
+            >
+              Remove
+            </button>
+          </div>
+        );
+      })}
+      {limits.length < 5 && (
+        <button
+          className="btn btn--ghost btn--sm"
+          type="button"
+          onClick={() => update([...limits, { requests: 10, seconds: 600 }])}
+        >
+          Add time period
+        </button>
+      )}
+    </section>
   );
 }

@@ -43,6 +43,7 @@ TOTAL_GUEST_SEARCH_PER_MIN = 600
 IP_MAX_PENDING = 20
 IP_REQUEST_COOLDOWN = 2.0
 MAX_PENDING_TOTAL = 200
+MAX_RATE_LIMIT_WINDOWS = 5  # per-guest request periods an admin can stack up
 AUTO_REVIEW_CONCURRENCY = 3  # lyrics + Jev lookups running at once
 RATE_KEYS_MAX = 20_000  # bound on remembered guests / IPs per limiter
 
@@ -117,7 +118,6 @@ class Party:
         # rate limiting (all bounded LRU/TTL maps; keys are guest ids or client IPs)
         self.ip_search_per_min = IP_SEARCH_PER_MIN
         self.ip_max_pending = IP_MAX_PENDING
-        self._guest_last_request: TTLCache[str, float] = TTLCache(RATE_KEYS_MAX, 3600)
         self._ip_last_request: TTLCache[str, float] = TTLCache(RATE_KEYS_MAX, 3600)
         self._ip_requests: TTLCache[str, list[int]] = TTLCache(RATE_KEYS_MAX, 24 * 3600)
         self._guest_searches: SlidingWindow[str] = SlidingWindow(GUEST_SEARCH_PER_MIN, 60, RATE_KEYS_MAX)
@@ -508,6 +508,27 @@ class Party:
                 }
         return out
 
+    async def _rate_limit_blocked(
+        self, guest_id: str, limits: list[dict[str, int]]
+    ) -> tuple[float, dict[str, int]] | None:
+        """First per-guest window they've used up, as (seconds until another is allowed, window)."""
+        if not limits:
+            return None
+        now_ts = time.time()
+        rows = await self.db.fetchall(
+            "SELECT created_at FROM requests WHERE guest_id=? AND created_at > ? ORDER BY created_at",
+            guest_id,
+            now_ts - max(w["seconds"] for w in limits),
+        )
+        stamps = [float(r["created_at"]) for r in rows]
+        for limit in limits:
+            recent = [t for t in stamps if t > now_ts - limit["seconds"]]
+            if len(recent) >= limit["requests"]:
+                # This older request has to age out of the window before another fits.
+                expires = recent[len(recent) - limit["requests"]]
+                return max(1.0, expires + limit["seconds"] - now_ts), limit
+        return None
+
     async def _ip_pending(self, ip: str) -> list[int]:
         """Ids of this IP's requests that are still pending."""
         ids = self._ip_requests.get(ip) or []
@@ -538,11 +559,6 @@ class Party:
         )
         if dup:
             raise ApiError(409, "Someone already requested that song")
-        pending = await self.db.fetchone(
-            "SELECT COUNT(*) AS n FROM requests WHERE guest_id=? AND status='pending'", guest_id
-        )
-        if pending and pending["n"] >= int(s.get("max_pending_per_guest", 3)):
-            raise ApiError(429, "You have too many requests waiting, hang tight")
         total = await self.db.fetchone("SELECT COUNT(*) AS n FROM requests WHERE status='pending'")
         if total and total["n"] >= MAX_PENDING_TOTAL:
             raise ApiError(429, "Lots of requests are waiting already, try again in a bit")
@@ -551,14 +567,17 @@ class Party:
             ip_pending = await self._ip_pending(ip)
             if len(ip_pending) >= self.ip_max_pending:
                 raise ApiError(429, "Too many requests waiting from your network, hang tight")
-        cooldown = float(s.get("request_cooldown_seconds", 20))
-        last = self._guest_last_request.get(guest_id) or 0.0
-        if time.time() - last < cooldown:
-            wait = int(cooldown - (time.time() - last)) + 1
-            raise ApiError(429, f"Please wait {wait}s before requesting another song")
+        limits = _rate_limit_windows(s.get("request_rate_limits"))
+        blocked = await self._rate_limit_blocked(guest_id, limits)
+        if blocked:
+            wait, limit = blocked
+            raise ApiError(
+                429,
+                f"You can request {limit['requests']} songs every {_human_seconds(limit['seconds'])}. "
+                f"Try again in {_human_seconds(wait)}",
+            )
         if ip and time.time() - (self._ip_last_request.get(ip) or 0.0) < IP_REQUEST_COOLDOWN:
             raise ApiError(429, "Please wait a moment before requesting another song")
-        self._guest_last_request.set(guest_id, time.time())
         if ip:
             self._ip_last_request.set(ip, time.time())
         auto = not s.get("require_approval", True)
@@ -1025,10 +1044,8 @@ class Party:
                     raise ApiError(400, "Invalid crossfade mode")
             elif key == "crossfade_duration":
                 val = _number(key, val, 1, 15)
-            elif key == "max_pending_per_guest":
-                val = _number(key, val, 1, 100)  # 0 would silently block every guest
-            elif key == "request_cooldown_seconds":
-                val = _number(key, val, 0, 3600)
+            elif key == "request_rate_limits":
+                val = _rate_limits(key, val)
             elif key == "auto_approval_threshold":
                 val = _number(key, val, 50, 100)
             elif key == "auto_approval_prompt":
@@ -1099,3 +1116,56 @@ def _number(key: str, val: Any, lo: int, hi: int) -> int:
     if not lo <= val <= hi:
         raise ApiError(400, f"{key} must be between {lo} and {hi}")
     return round(val)
+
+
+def _whole(key: str, val: Any, lo: int, hi: int) -> int:
+    """Strict whole-number setting: an int (not a bool, float, string or null) in [lo, hi]."""
+    if isinstance(val, bool) or not isinstance(val, int) or not lo <= val <= hi:
+        raise ApiError(400, f"{key} must be a whole number between {lo} and {hi}")
+    return val
+
+
+def _rate_limits(key: str, val: Any) -> list[dict[str, int]]:
+    """Validate request_rate_limits: [{requests, seconds}], shortest window first, no duplicates."""
+    if not isinstance(val, list):
+        raise ApiError(400, f"{key} must be a list of periods")
+    if len(val) > MAX_RATE_LIMIT_WINDOWS:
+        raise ApiError(400, f"{key} can have at most {MAX_RATE_LIMIT_WINDOWS} periods")
+    windows: dict[tuple[int, int], dict[str, int]] = {}
+    for item in val:
+        if not isinstance(item, dict):
+            raise ApiError(400, f"Each period in {key} needs requests and seconds")
+        requests_ = _whole(f"{key}.requests", item.get("requests"), 1, 1000)
+        seconds = _whole(f"{key}.seconds", item.get("seconds"), 1, 604_800)
+        windows[(seconds, requests_)] = {"requests": requests_, "seconds": seconds}
+    return [windows[k] for k in sorted(windows)]
+
+
+def _rate_limit_windows(value: Any) -> list[dict[str, int]]:
+    """Stored request_rate_limits, tolerating values written by older or hand-edited configs."""
+    if not isinstance(value, list):
+        return []
+    windows: dict[tuple[int, int], dict[str, int]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        requests_, seconds = item.get("requests"), item.get("seconds")
+        if isinstance(requests_, int) and isinstance(seconds, int) and requests_ > 0 and seconds > 0:
+            windows[(seconds, requests_)] = {"requests": requests_, "seconds": seconds}
+    return [windows[k] for k in sorted(windows)]
+
+
+def _human_seconds(seconds: float) -> str:
+    """'45 seconds', '10 minutes', '1 minute 30 seconds', '2 hours 5 minutes'."""
+    total = max(1, round(seconds))
+    if total < 60:
+        return f"{total} second" if total == 1 else f"{total} seconds"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        out = f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+        return f"{out} {secs} seconds" if secs else out
+    hours, mins = divmod(minutes, 60)
+    out = f"{hours} hour" if hours == 1 else f"{hours} hours"
+    if mins:
+        out += f" {mins} minute" if mins == 1 else f" {mins} minutes"
+    return out

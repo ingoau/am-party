@@ -166,8 +166,8 @@ export type Settings = {
   fallback_shuffle: boolean;
   crossfade_mode: CrossfadeMode;
   crossfade_duration: number;
-  max_pending_per_guest: number;
-  request_cooldown_seconds: number;
+  /** Songs each guest may request per period; every period applies. Empty = no limit. */
+  request_rate_limits: RequestRateLimit[];
   speaker_naming_notes: string;
   auto_approval: boolean;
   /** Percent (50-100): Jev must be at least this sure to decide on its own. */
@@ -180,6 +180,9 @@ export type Settings = {
 };
 
 export type JevProvider = "typesafe" | "openrouter";
+
+/** A rolling per-guest request budget: at most `requests` songs in any `seconds` window. */
+export type RequestRateLimit = { requests: number; seconds: number };
 
 export type AutoApprovalStatus = {
   api_key_sources: Record<JevProvider, TokenSource>;

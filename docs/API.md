@@ -112,8 +112,10 @@ These are additive: a well-behaved same-origin client (the SPA) is unaffected.
   Unsigned/forged values are replaced by a new id (so a pre-upgrade guest starts fresh).
 - **Rate limits** (all `429 {error}`): search per guest (30/min), per client IP
   (`AM_PARTY_IP_SEARCHES_PER_MINUTE`, default 120/min) and in total (600/min); requests per
-  guest (`max_pending_per_guest`, `request_cooldown_seconds`), per IP
-  (`AM_PARTY_IP_MAX_PENDING` pending, default 20; 2 s cooldown) and in total (200 pending).
+  guest (`request_rate_limits`: each `{requests, seconds}` window is a rolling budget, e.g.
+  the default 10 per 10 minutes; every window applies; `[]` = no per-guest request limit),
+  per IP (`AM_PARTY_IP_MAX_PENDING` pending, default 20; 2 s cooldown) and in total
+  (200 pending).
 - **`/api/ws`**: messages over 4 KiB close the socket; a cross-site `Origin` gets `403`; more
   than 100 sockets per IP or 500 in total get `429` before the upgrade. `ping` is answered at
   most twice per second (extra pings are ignored, no `pong`). On `POST /auth/logout` the
@@ -221,8 +223,7 @@ type Settings = {
   fallback_shuffle: boolean;
   crossfade_mode: "smart" | "standard" | "off";
   crossfade_duration: number;        // seconds, standard mode (1-15)
-  max_pending_per_guest: number;
-  request_cooldown_seconds: number;
+  request_rate_limits: { requests: number; seconds: number }[]; // per guest, every period applies
   speaker_naming_notes: string;      // up to 1000 chars, line breaks kept
   auto_approval: boolean;            // let Jev approve/reject while require_approval is on
   auto_approval_threshold: number;   // percent, 50-100 (default 90): below it the request is flagged for a person

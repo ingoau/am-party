@@ -16,7 +16,7 @@ async def make_party(tmp_path: Path) -> Party:
     await db.open()
     party = Party(db, apple=None, hub=Hub())
     await party.load()
-    await party.update_settings({"request_cooldown_seconds": 0, "max_pending_per_guest": 10})
+    await party.update_settings({"request_rate_limits": []})
     for i in range(5):
         party._cache_track(Track(id=str(i), title=f"Song {i}", artist="A"))  # noqa: SLF001
     return party
