@@ -50,6 +50,8 @@ class Config:
     ip_search_per_min: int = 120
     ip_max_pending: int = 20
     sendspin_port: int = 0  # native LAN listener; 0 = disabled
+    typesafe_api_key: str | None = None  # Jev, for automatic request approval
+    openrouter_api_key: str | None = None  # Jev through OpenRouter
     # misc
     dev_mode: bool = False
     static_dir: Path = field(default_factory=lambda: Path(__file__).parent / "static")
@@ -119,6 +121,9 @@ def load_config() -> Config:
         ip_search_per_min=max(1, int(_env("AM_PARTY_IP_SEARCHES_PER_MINUTE", "120"))),
         ip_max_pending=max(1, int(_env("AM_PARTY_IP_MAX_PENDING", "20"))),
         sendspin_port=int(_env("AM_PARTY_SENDSPIN_PORT", "0")),
+        typesafe_api_key=_read_secret("TYPESAFE_API_KEY") or _file_if_exists(secrets_dir / "typesafe_api_key"),
+        openrouter_api_key=_read_secret("OPENROUTER_API_KEY")
+        or _file_if_exists(secrets_dir / "openrouter_api_key"),
         dev_mode=_env("AM_PARTY_DEV", "0") == "1",
         static_dir=Path(_env("AM_PARTY_STATIC_DIR", str(Path(__file__).parent / "static"))),
     )

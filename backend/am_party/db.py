@@ -44,7 +44,12 @@ CREATE TABLE IF NOT EXISTS requests (
     decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     decided_at REAL,
     -- the speaker whose QR the guest scanned (/?speaker=<claim token>), if any
-    speaker_id TEXT REFERENCES speakers(id) ON DELETE SET NULL
+    speaker_id TEXT REFERENCES speakers(id) ON DELETE SET NULL,
+    -- automatic review (Jev): checking | approved | rejected | flagged | error
+    auto_status TEXT,
+    auto_decision TEXT,  -- what Jev picked: approve | reject
+    auto_probability REAL,  -- Jev's probability for auto_decision, 0..1
+    auto_note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 
@@ -125,6 +130,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "tv_empty_text": "",
     # Shown to whoever names a new speaker (naming conventions etc.); "" = none.
     "speaker_naming_notes": "",
+    # Automatic review with Jev (only applies while require_approval is on).
+    "auto_approval": False,
+    "auto_approval_threshold": 90,  # percent; below this a request waits for a person
+    "auto_approval_prompt": "",  # "" = built-in default prompt
+    "auto_approval_model": "jev-latest",
+    "auto_approval_provider": "typesafe",  # typesafe | openrouter (both serve Jev)
 }
 
 
@@ -153,6 +164,14 @@ class Database:
             await self.c.execute(
                 "ALTER TABLE requests ADD COLUMN speaker_id TEXT REFERENCES speakers(id) ON DELETE SET NULL"
             )
+        for col, kind in (
+            ("auto_status", "TEXT"),
+            ("auto_decision", "TEXT"),
+            ("auto_probability", "REAL"),
+            ("auto_note", "TEXT"),
+        ):
+            if col not in req_cols:
+                await self.c.execute(f"ALTER TABLE requests ADD COLUMN {col} {kind}")
         cols = {r["name"] for r in await self.fetchall("PRAGMA table_info(users)")}
         if "permissions" not in cols:
             # v1 -> v2: individual permissions replace can_approve / can_manage_queue

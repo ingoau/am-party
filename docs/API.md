@@ -38,6 +38,7 @@ type State = {
   paused: boolean;
   requests_open: boolean;
   require_approval: boolean;    // false = guest requests go straight into the queue
+  auto_approval: boolean;       // Jev reviews waiting requests (approval on + enabled + API key set)
   listeners: number;            // connected sendspin players
   public_url: string;           // configured public base URL (QR code target)
   speaker_naming_notes: string; // admin notes shown when naming a new speaker ("" = none)
@@ -55,6 +56,12 @@ type Request = {
   decided_by: string | null;    // user display name (admin views only)
   guest_label: string;          // short anonymised label e.g. "Guest 7F3A" (admin views only)
   speaker?: string;             // name of the speaker whose QR the guest scanned; absent if none (admin views only)
+  auto?: {                      // automatic (Jev) review; absent if never auto-checked (admin views only)
+    status: "checking" | "approved" | "rejected" | "flagged" | "error";
+    decision: "approve" | "reject" | null; // what Jev leaned towards
+    probability: number | null;  // Jev's probability for `decision`, 0-1
+    note: string | null;         // e.g. "No lyrics found", or the error
+  };
 };
 
 type Permission = "approve_requests" | "queue_add" | "queue_reorder" | "queue_remove"
@@ -131,6 +138,7 @@ Each endpoint needs the permission shown (admins have all). 401 if signed out, 4
 | GET | `/api/admin/requests?status=pending` | `{requests: Request[]}` (status optional: pending/approved/rejected/all, newest first, max 200) |
 | POST | `/api/admin/requests/{id}/approve` | body `{position?: "next" \| "end"}` (default end) |
 | POST | `/api/admin/requests/{id}/reject` | |
+| POST | `/api/admin/requests/{id}/recheck` | run the automatic (Jev) review again on a pending request; `409` if not pending or auto-approval is off |
 | POST | `/api/admin/requests/approve-all` | body `{position?: "next" \| "end"}` → `{ok, approved: n}`; oldest first |
 | POST | `/api/admin/requests/require-approval` | `{enabled: boolean}` → `{ok, require_approval, approved}`; disabling auto-approves everything pending and all future requests (`decided_by` null = auto-approved) |
 
@@ -216,8 +224,28 @@ type Settings = {
   max_pending_per_guest: number;
   request_cooldown_seconds: number;
   speaker_naming_notes: string;      // up to 1000 chars, line breaks kept
+  auto_approval: boolean;            // let Jev approve/reject while require_approval is on
+  auto_approval_threshold: number;   // percent, 50-100 (default 90): below it the request is flagged for a person
+  auto_approval_prompt: string;      // up to 2000 chars; "" = built-in default
+  auto_approval_model: string;       // default "jev-latest"
+  auto_approval_provider: "typesafe" | "openrouter"; // who serves Jev (same API; separate keys)
 };
 ```
+
+### Automatic approval (admin)
+
+With `require_approval` and `auto_approval` on and an API key set for the selected provider (TypeSafe, or
+OpenRouter's System One API at `https://openrouter.ai/api/v1/systemone`), each new request stays `pending` while
+the server looks up its lyrics on [LRCLIB](https://lrclib.net) and asks [Jev](https://docs.typesafe.ai) a two-option
+Choice (approve / reject) with the prompt as instructions and the song name, artist, album, explicit rating and lyrics
+as state. If Jev's probability for its pick is at least the threshold, the request is approved (end of queue) or
+rejected with `decided_by: null`; otherwise it stays pending with `auto.status: "flagged"`. Errors also leave it
+pending (`auto.status: "error"`). Switching auto-approval on, or saving a key, reviews requests already waiting.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/admin/auto-approval` | `{api_key_sources: {typesafe, openrouter: "env"\|"db"\|null}, configured, active, default_prompt, default_model}` (keys are never returned; `configured` = the selected provider has a key) |
+| PUT | `/api/admin/auto-approval` | `{provider?: "typesafe"\|"openrouter" (default typesafe), api_key: string}` (empty string clears the DB value) → same as GET |
 
 ### Apple Music connection (admin)
 

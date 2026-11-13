@@ -81,7 +81,20 @@ const settings = {
   max_pending_per_guest: 3,
   request_cooldown_seconds: 30,
   speaker_naming_notes: "",
+  auto_approval: true,
+  auto_approval_threshold: 90,
+  auto_approval_prompt: "",
+  auto_approval_model: "jev-latest",
+  auto_approval_provider: "typesafe",
 };
+const autoApproval = {
+  api_key_sources: { typesafe: "db", openrouter: null },
+  default_prompt:
+    "Should this song be played at the party? Approve songs that suit a party crowd. Reject songs whose lyrics are sexually explicit, hateful, contain slurs, or glorify violence or self-harm. A song that only swears a little is fine.",
+  default_model: "jev-latest",
+};
+const autoActive = () =>
+  settings.require_approval && settings.auto_approval && !!autoApproval.api_key_sources[settings.auto_approval_provider];
 let nowPlaying = { track: TRACKS[Number(process.env.MOCK_NOW_PLAYING ?? 3) % TRACKS.length], queue_item_id: null, source: "fallback", started_at: now() - 61 };
 let paused = false;
 let pausedAt = 0;
@@ -93,12 +106,12 @@ let upcoming = [
 let fallbackIdx = 7;
 const requests = [
   { id: nextId++, track: TRACKS[6], status: "pending", created_at: now() - 120, decided_at: null, decided_by: null, guest_label: "Guest 7F3A", guest: "x" },
-  { id: nextId++, track: TRACKS[12], status: "pending", created_at: now() - 40, decided_at: null, decided_by: null, guest_label: "Guest 21C9", guest: "y" },
+  { id: nextId++, track: TRACKS[12], status: "pending", created_at: now() - 40, decided_at: null, decided_by: null, guest_label: "Guest 21C9", guest: "y", auto: { status: "flagged", decision: "approve", probability: 0.72, note: "No lyrics found" } },
   { id: nextId++, track: TRACKS[0], status: "pending", created_at: now() - 95, decided_at: null, decided_by: null, guest_label: "Guest 5D10", guest: "w" },
   { id: nextId++, track: TRACKS[7], status: "pending", created_at: now() - 75, decided_at: null, decided_by: null, guest_label: "Guest 9AC4", guest: "v" },
-  { id: nextId++, track: TRACKS[16], status: "pending", created_at: now() - 60, decided_at: null, decided_by: null, guest_label: "Guest 3E77", guest: "u" },
+  { id: nextId++, track: TRACKS[16], status: "pending", created_at: now() - 60, decided_at: null, decided_by: null, guest_label: "Guest 3E77", guest: "u", auto: { status: "checking", decision: null, probability: null, note: null } },
   { id: nextId++, track: TRACKS[11], status: "pending", created_at: now() - 20, decided_at: null, decided_by: null, guest_label: "Guest 7F3A", guest: "x" },
-  { id: nextId++, track: TRACKS[15], status: "approved", created_at: now() - 1500, decided_at: now() - 1500, decided_by: null, guest_label: "Guest 44B0", guest: "t" },
+  { id: nextId++, track: TRACKS[15], status: "approved", created_at: now() - 1500, decided_at: now() - 1500, decided_by: null, guest_label: "Guest 44B0", guest: "t", auto: { status: "approved", decision: "approve", probability: 0.98, note: null } },
   { id: nextId++, track: TRACKS[5], status: "approved", created_at: now() - 900, decided_at: now() - 860, decided_by: "Sam Host", guest_label: "Guest 7F3A", guest: "x" },
   { id: nextId++, track: TRACKS[1], status: "rejected", created_at: now() - 1200, decided_at: now() - 1100, decided_by: "Sam Host", guest_label: "Guest 0B12", guest: "z" },
   { id: nextId++, track: TRACKS[14], status: "approved", created_at: now() - 700, decided_at: now() - 650, decided_by: "Sam Host", guest_label: "Guest 7F3A", guest: "x" },
@@ -160,6 +173,7 @@ function state() {
     paused,
     requests_open: settings.requests_open,
     require_approval: settings.require_approval,
+    auto_approval: autoActive(),
     speaker_naming_notes: settings.speaker_naming_notes,
     listeners: 4,
   };
@@ -391,6 +405,20 @@ const server = http.createServer(async (req, res) => {
     requestsChanged();
     return json(res, 200, { ok: true, require_approval: settings.require_approval, approved });
   }
+  if ((m = p.match(/^\/api\/admin\/requests\/(\d+)\/recheck$/)) && req.method === "POST") {
+    if (!need("approve_requests")) return;
+    const r = requests.find((x) => x.id === Number(m[1]));
+    if (!r || r.status !== "pending") return err(res, 409, "Only waiting requests can be re-checked");
+    if (!autoActive()) return err(res, 409, "Automatic approval is off");
+    r.auto = { status: "checking", decision: null, probability: null, note: null };
+    setTimeout(() => {
+      if (r.status !== "pending") return;
+      r.auto = { status: "flagged", decision: "reject", probability: 0.81, note: null };
+      requestsChanged();
+    }, 1500);
+    requestsChanged();
+    return json(res, 200, { ok: true });
+  }
   if ((m = p.match(/^\/api\/admin\/requests\/(\d+)\/(approve|reject)$/)) && req.method === "POST") {
     if (!need("approve_requests")) return;
     const r = requests.find((x) => x.id === Number(m[1]));
@@ -545,6 +573,16 @@ const server = http.createServer(async (req, res) => {
         last_error: null,
       },
     });
+  }
+  if (p === "/api/admin/auto-approval") {
+    if (!need("admin")) return;
+    if (req.method === "PUT") {
+      const b = await readBody(req);
+      autoApproval.api_key_sources[b.provider ?? "typesafe"] = b.api_key ? "db" : null;
+      broadcastState();
+    }
+    const configured = !!autoApproval.api_key_sources[settings.auto_approval_provider];
+    return json(res, 200, { ...autoApproval, configured, active: autoActive() });
   }
   if (p === "/api/admin/apple-music") {
     if (!need("admin")) return;

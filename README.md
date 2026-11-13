@@ -66,6 +66,17 @@ Streaming needs three things, all of which can be dropped into `./secrets/` (mou
 
 Apple allows one concurrent stream per account — don't play the same account elsewhere during the party.
 
+### Automatic approval (Jev)
+
+**Settings → Automatic approval** lets [Jev](https://docs.typesafe.ai), TypeSafe's decision model, approve or reject
+requests. Each new request's lyrics are looked up on [LRCLIB](https://lrclib.net), and Jev gets the song name, artist,
+album, Apple Music explicit rating and lyrics together with your prompt. Jev returns a calibrated probability for
+its pick: when that's at least the **certainty needed** (default 90%) the request is approved or rejected
+automatically; otherwise it stays in the Requests list, flagged with Jev's lean, for a person to decide. Lookup
+failures leave requests for a person too. Jev can come straight from TypeSafe or through
+[OpenRouter](https://openrouter.ai/typesafe) (no waitlist, billed to your OpenRouter account); pick the provider and
+paste its key in Settings (or set `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY`). It only runs while approval is on.
+
 ### Configuration (env)
 
 | Variable | Default | |
@@ -81,6 +92,7 @@ Apple allows one concurrent stream per account — don't play the same account e
 | `AM_PARTY_IP_MAX_PENDING` | `20` | pending guest requests per client IP |
 | `AM_PARTY_MAX_LISTENERS` | `100` | max concurrent `/sendspin` connections |
 | `AM_PARTY_SENDSPIN_PORT` | unset (off) | also run the native Sendspin listener on this port (plain `ws://`, for hardware players on the LAN; publish it in compose) |
+| `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY` | unset | API keys for [Jev](https://docs.typesafe.ai) automatic approval, from TypeSafe or OpenRouter (also `*_FILE`, or `secrets/typesafe_api_key` / `secrets/openrouter_api_key`; a key saved in Settings wins) |
 | `AM_PARTY_HOST_PORT` | `8930` | host port in compose |
 | `AM_PARTY_LOG_LEVEL` | `INFO` | |
 

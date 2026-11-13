@@ -15,6 +15,7 @@ from aiohttp import web
 
 from . import api
 from .auth import AuthManager
+from .autoapprove import DEFAULT_MODEL, DEFAULT_PROMPT, PROVIDERS as JEV_PROVIDERS, AutoReviewer
 from .config import Config
 from .db import Database, now
 from .party import Hub, Party
@@ -72,6 +73,7 @@ class AmParty:
         self.party.public_url = self.config.public_url
         self.party.set_rate_limits(self.config.ip_search_per_min, self.config.ip_max_pending)
         await self.party.load()
+        self.party.set_reviewer(AutoReviewer(self.http, await self.jev_api_keys()))
 
         build_transition = None
         tail_seconds = head_seconds = lambda mode, dur: 0.0  # noqa: E731
@@ -124,6 +126,8 @@ class AmParty:
         await self.engine.start()
         self._spawn(self.party.connect_apple(), "connect-apple")
         self._spawn(self.party.fallback_refresher(), "fallback-refresher")
+        # requests a restart interrupted mid-check (or that arrived while the key was missing)
+        self._spawn(self.party.review_pending(), "review-pending")
         self._spawn(self._housekeeping(), "housekeeping")
         if not self.config.oidc_enabled:
             LOGGER.warning("OIDC is not configured (OIDC_ISSUER / OIDC_CLIENT_ID): nobody can sign in to the admin UI")
@@ -240,6 +244,38 @@ class AmParty:
             developer_token=await self.developer_token(), user_token=await self.user_token()
         )
         await self.party.connect_apple()
+
+    # -- automatic approval (Jev) -------------------------------------------------------
+    def _env_key(self, provider: str) -> str | None:
+        return {"typesafe": self.config.typesafe_api_key, "openrouter": self.config.openrouter_api_key}.get(provider)
+
+    async def jev_api_key(self, provider: str) -> str | None:
+        """Key for a Jev provider; one saved in Settings wins over env/secret files."""
+        row = await self.db.get_credential(f"{provider}_api_key")
+        return row[0] if row else self._env_key(provider)
+
+    async def jev_api_keys(self) -> dict[str, str | None]:
+        return {p: await self.jev_api_key(p) for p in JEV_PROVIDERS}
+
+    async def update_jev_api_key(self, provider: str, key: str) -> None:
+        await self.db.set_credential(f"{provider}_api_key", key.strip() or None)
+        if self.party.reviewer:
+            self.party.reviewer.api_keys[provider] = await self.jev_api_key(provider)
+        self.party.changed()  # auto_approval in the public state depends on the key
+        await self.party.review_pending()
+
+    async def auto_approval_status(self) -> dict[str, Any]:
+        keys: dict[str, str | None] = {}
+        for p in JEV_PROVIDERS:
+            row = await self.db.get_credential(f"{p}_api_key")
+            keys[p] = "db" if row else ("env" if self._env_key(p) else None)
+        return {
+            "api_key_sources": keys,
+            "configured": bool(self.party.reviewer and self.party.reviewer.configured),
+            "active": self.party.auto_review_enabled(),
+            "default_prompt": DEFAULT_PROMPT,
+            "default_model": DEFAULT_MODEL,
+        }
 
     async def apple_status(self) -> dict[str, Any]:
         from .providers.apple_music import developer_token_expiry

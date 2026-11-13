@@ -36,6 +36,8 @@ export type State = {
   requests_open: boolean;
   /** false = guest requests skip approval and go straight into the queue. */
   require_approval: boolean;
+  /** Jev reviews waiting requests automatically (approval on, enabled, API key set). */
+  auto_approval: boolean;
   listeners: number;
   /** Configured public base URL, used for the QR code ("" when unset). */
   public_url: string;
@@ -67,6 +69,23 @@ export type SongRequest = {
   guest_label?: string;
   /** Admin views only: name of the speaker whose QR the guest scanned; absent if none. */
   speaker?: string;
+  /** Admin views only: automatic (Jev) review; absent if the request was never auto-checked. */
+  auto?: AutoReview;
+};
+
+/**
+ * checking: lyrics + Jev in progress. approved / rejected: Jev decided on its own.
+ * flagged: Jev was below the certainty threshold, so a person decides. error: the check failed.
+ */
+export type AutoReviewStatus = "checking" | "approved" | "rejected" | "flagged" | "error";
+
+export type AutoReview = {
+  status: AutoReviewStatus;
+  /** What Jev leaned towards. */
+  decision: "approve" | "reject" | null;
+  /** Jev's probability for `decision`, 0-1. */
+  probability: number | null;
+  note: string | null;
 };
 
 export type Permission =
@@ -150,6 +169,24 @@ export type Settings = {
   max_pending_per_guest: number;
   request_cooldown_seconds: number;
   speaker_naming_notes: string;
+  auto_approval: boolean;
+  /** Percent (50-100): Jev must be at least this sure to decide on its own. */
+  auto_approval_threshold: number;
+  /** "" = built-in default prompt. */
+  auto_approval_prompt: string;
+  auto_approval_model: string;
+  /** Who serves Jev: TypeSafe directly, or OpenRouter (same API, OpenRouter key and billing). */
+  auto_approval_provider: JevProvider;
+};
+
+export type JevProvider = "typesafe" | "openrouter";
+
+export type AutoApprovalStatus = {
+  api_key_sources: Record<JevProvider, TokenSource>;
+  configured: boolean;
+  active: boolean;
+  default_prompt: string;
+  default_model: string;
 };
 
 export type Playlist = { id: string; name: string; artwork_url: string | null };
