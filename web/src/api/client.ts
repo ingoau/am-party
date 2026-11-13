@@ -1,6 +1,8 @@
 import type {
   AdminStatus,
   AppleMusicStatus,
+  AutoApprovalStatus,
+  JevProvider,
   BulkUserUpdate,
   Me,
   Permission,
@@ -120,6 +122,7 @@ export const api = {
   approve: (id: number, position: "next" | "end" = "end") =>
     request<{ request: SongRequest }>("POST", `/api/admin/requests/${id}/approve`, { position }),
   reject: (id: number) => request<{ request: SongRequest }>("POST", `/api/admin/requests/${id}/reject`, {}),
+  recheck: (id: number) => command("POST", `/api/admin/requests/${id}/recheck`, {}),
   approveAll: (position: "next" | "end" = "end") =>
     request<{ ok: boolean; approved: number }>("POST", "/api/admin/requests/approve-all", { position }),
   setRequireApproval: (enabled: boolean) =>
@@ -159,4 +162,7 @@ export const api = {
   appleMusic: () => request<AppleMusicStatus>("GET", "/api/admin/apple-music"),
   putAppleMusic: (body: { developer_token?: string; user_token?: string }) =>
     request<AppleMusicStatus>("PUT", "/api/admin/apple-music", body),
+  autoApproval: () => request<AutoApprovalStatus>("GET", "/api/admin/auto-approval"),
+  putAutoApprovalKey: (provider: JevProvider, api_key: string) =>
+    request<AutoApprovalStatus>("PUT", "/api/admin/auto-approval", { provider, api_key }),
 };

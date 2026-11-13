@@ -391,6 +391,15 @@ async def reject(request: web.Request) -> web.Response:
     return web.json_response({"request": req})
 
 
+@routes.post("/api/admin/requests/{id}/recheck")
+async def recheck(request: web.Request) -> web.Response:
+    """Run the automatic (Jev) review again on a waiting request."""
+    csrf_check(request)
+    await enc(request).auth.require(request, "approve_requests")
+    await enc(request).party.recheck_request(int_param(request, "id"))
+    return web.json_response({"ok": True})
+
+
 # --------------------------------------------------------------------------- queue managers
 @routes.get("/api/admin/search")
 async def admin_search(request: web.Request) -> web.Response:
@@ -783,6 +792,32 @@ async def apple_put(request: web.Request) -> web.Response:
         developer_token=data.get("developer_token"), user_token=data.get("user_token")
     )
     return web.json_response(await e.apple_status())
+
+
+@routes.get("/api/admin/auto-approval")
+async def auto_approval_status(request: web.Request) -> web.Response:
+    e = enc(request)
+    await e.auth.require(request, "admin")
+    return web.json_response(await e.auto_approval_status())
+
+
+@routes.put("/api/admin/auto-approval")
+async def auto_approval_put(request: web.Request) -> web.Response:
+    """Set ("" clears) a Jev provider's API key. Keys are never returned by any endpoint."""
+    from .autoapprove import PROVIDERS
+
+    csrf_check(request)
+    e = enc(request)
+    await e.auth.require(request, "admin")
+    data = await body(request)
+    provider = data.get("provider", "typesafe")
+    if provider not in PROVIDERS:
+        raise ApiError(400, "provider must be one of " + ", ".join(PROVIDERS))
+    key = data.get("api_key")
+    if not isinstance(key, str) or len(key) > 1024:
+        raise ApiError(400, "api_key must be a string")
+    await e.update_jev_api_key(provider, key)
+    return web.json_response(await e.auto_approval_status())
 
 
 @routes.post("/api/admin/apple-music/user-token")

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from .autoapprove import DEFAULT_MODEL, PROVIDERS, AutoReviewer, ReviewError
 from .db import Database, now
 from .models import NotConfigured, ProviderError, Track
 from .player.engine import Candidate, NowPlaying
@@ -42,6 +43,7 @@ TOTAL_GUEST_SEARCH_PER_MIN = 600
 IP_MAX_PENDING = 20
 IP_REQUEST_COOLDOWN = 2.0
 MAX_PENDING_TOTAL = 200
+AUTO_REVIEW_CONCURRENCY = 3  # lyrics + Jev lookups running at once
 RATE_KEYS_MAX = 20_000  # bound on remembered guests / IPs per limiter
 
 
@@ -127,6 +129,10 @@ class Party:
         # fallback tracks played in the current pass through the (shuffled) playlist
         self.fallback_played: set[str] = set()
         self._tasks: set[asyncio.Task] = set()  # background work, awaited on close()
+        # automatic review (Jev); set by the app once its HTTP session exists
+        self.reviewer: AutoReviewer | None = None
+        self._review_sem = asyncio.Semaphore(AUTO_REVIEW_CONCURRENCY)
+        self._reviewing: set[int] = set()
 
     # -- lifecycle --------------------------------------------------------------
     async def load(self) -> None:
@@ -402,6 +408,7 @@ class Party:
             "paused": bool(eng and eng.paused),
             "requests_open": bool(self._settings.get("requests_open", True)),
             "require_approval": bool(self._settings.get("require_approval", True)),
+            "auto_approval": self.auto_review_enabled(),
             "listeners": self.listeners,
             "public_url": self.public_url,
             "tv_cta_text": self._settings.get("tv_cta_text", ""),
@@ -491,6 +498,14 @@ class Party:
             out["guest_label"] = self.guest_label(r["guest_id"])
             if r.get("speaker_name"):
                 out["speaker"] = r["speaker_name"]
+            if r.get("auto_status"):
+                prob = r.get("auto_probability")
+                out["auto"] = {
+                    "status": r["auto_status"],
+                    "decision": r.get("auto_decision"),
+                    "probability": round(prob, 4) if prob is not None else None,
+                    "note": r.get("auto_note"),
+                }
         return out
 
     async def _ip_pending(self, ip: str) -> list[int]:
@@ -547,10 +562,12 @@ class Party:
         if ip:
             self._ip_last_request.set(ip, time.time())
         auto = not s.get("require_approval", True)
+        review = not auto and self.auto_review_enabled()
         rid = await self.db.execute(
-            "INSERT INTO requests(track_id, track, guest_id, status, created_at, decided_at, speaker_id) "
+            "INSERT INTO requests(track_id, track, guest_id, status, created_at, decided_at, speaker_id, "
+            "auto_status) "
             # the speaker may have been forgotten since its token was resolved
-            "VALUES(?,?,?,?,?,?,(SELECT id FROM speakers WHERE id=?))",
+            "VALUES(?,?,?,?,?,?,(SELECT id FROM speakers WHERE id=?),?)",
             track.id,
             json.dumps(track.to_dict()),
             guest_id,
@@ -558,7 +575,10 @@ class Party:
             now(),
             now() if auto else None,
             speaker_id,
+            "checking" if review else None,
         )
+        if review:
+            self._start_review(rid)
         if ip and not auto:
             self._ip_requests.set(ip, [*ip_pending[-(self.ip_max_pending * 2) :], rid])
         if auto:
@@ -680,6 +700,131 @@ class Party:
         self.changed()
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         return approved
+
+    # -- automatic review (lyrics + Jev) -----------------------------------------------
+    def set_reviewer(self, reviewer: AutoReviewer) -> None:
+        self.reviewer = reviewer
+        self._sync_reviewer()
+
+    def _sync_reviewer(self) -> None:
+        if self.reviewer:
+            self.reviewer.provider = str(self._settings.get("auto_approval_provider") or "typesafe")
+
+    def auto_review_enabled(self) -> bool:
+        s = self._settings
+        return bool(
+            self.reviewer
+            and self.reviewer.configured
+            and s.get("require_approval", True)
+            and s.get("auto_approval", False)
+        )
+
+    def _start_review(self, rid: int) -> None:
+        if rid not in self._reviewing:
+            self._reviewing.add(rid)
+            self._spawn(self._auto_review(rid), f"auto-review-{rid}")
+
+    async def review_pending(self, recheck: bool = False) -> int:
+        """Queue automatic reviews for pending requests: ones never checked or interrupted
+        mid-check (e.g. by a restart), or with recheck=True every pending request."""
+        if not self.auto_review_enabled():
+            return 0
+        sql = "SELECT id FROM requests WHERE status='pending'"
+        if not recheck:
+            sql += " AND (auto_status IS NULL OR auto_status='checking')"
+        rows = await self.db.fetchall(sql + " ORDER BY id")
+        for r in rows:
+            await self.db.execute(
+                "UPDATE requests SET auto_status='checking', auto_note=NULL WHERE id=? AND status='pending'",
+                r["id"],
+            )
+            self._start_review(r["id"])
+        if rows:
+            await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
+        return len(rows)
+
+    async def recheck_request(self, rid: int) -> None:
+        if not self.auto_review_enabled():
+            raise ApiError(409, "Automatic approval is off")
+        if not await self.db.execute_rowcount(
+            "UPDATE requests SET auto_status='checking', auto_note=NULL WHERE id=? AND status='pending'", rid
+        ):
+            raise ApiError(409, "Only waiting requests can be re-checked")
+        self._start_review(rid)
+        await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
+
+    async def _auto_review(self, rid: int) -> None:
+        try:
+            async with self._review_sem:
+                await self._run_review(rid)
+        finally:
+            self._reviewing.discard(rid)
+            await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
+
+    async def _run_review(self, rid: int) -> None:
+        row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)
+        if not row or row["status"] != "pending" or not self.reviewer:
+            return
+        track = Track.from_dict(json.loads(row["track"]))
+        s = self._settings
+        try:
+            verdict = await self.reviewer.review(
+                track,
+                prompt=str(s.get("auto_approval_prompt") or ""),
+                model=str(s.get("auto_approval_model") or DEFAULT_MODEL),
+            )
+        except ReviewError as err:
+            LOGGER.warning("Automatic review of request %s failed: %s", rid, err)
+            await self._set_review(rid, "error", None, None, str(err)[:300])
+            return
+        except Exception as err:  # never leave a request stuck on "checking"
+            LOGGER.exception("Automatic review of request %s crashed", rid)
+            await self._set_review(rid, "error", None, None, f"Review failed: {type(err).__name__}")
+            return
+        note = None if verdict.lyrics_found else "No lyrics found"
+        threshold = float(self._settings.get("auto_approval_threshold", 90)) / 100
+        # Settings may have changed while Jev was thinking: only act if still enabled.
+        if verdict.probability < threshold or not self.auto_review_enabled():
+            await self._set_review(rid, "flagged", verdict.decision, verdict.probability, note)
+            return
+        approve = verdict.decision == "approve"
+        status = "approved" if approve else "rejected"
+        async with self.db.transaction():
+            if not await self.db.execute_rowcount(
+                "UPDATE requests SET status=?, decided_by=NULL, decided_at=?, auto_status=?, "
+                "auto_decision=?, auto_probability=?, auto_note=? WHERE id=? AND status='pending'",
+                status,
+                now(),
+                status,
+                verdict.decision,
+                verdict.probability,
+                note,
+                rid,
+            ):
+                return  # withdrawn or decided by a person meanwhile
+            if approve and not any(q["track"].id == track.id for q in self.queue):
+                await self._insert_queue(track, "request", "end", request_id=rid)
+        LOGGER.info(
+            "Auto-%s request %s (%s - %s, %.0f%%)",
+            "approved" if approve else "rejected",
+            rid,
+            track.artist,
+            track.title,
+            verdict.probability * 100,
+        )
+
+    async def _set_review(
+        self, rid: int, status: str, decision: str | None, probability: float | None, note: str | None
+    ) -> None:
+        await self.db.execute(
+            "UPDATE requests SET auto_status=?, auto_decision=?, auto_probability=?, auto_note=? "
+            "WHERE id=? AND status='pending'",
+            status,
+            decision,
+            probability,
+            note,
+            rid,
+        )
 
     async def decide_request(self, rid: int, user: User, approve: bool, position: str = "end") -> dict[str, Any]:
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)
@@ -884,7 +1029,22 @@ class Party:
                 val = _number(key, val, 1, 100)  # 0 would silently block every guest
             elif key == "request_cooldown_seconds":
                 val = _number(key, val, 0, 3600)
-            elif key in ("requests_open", "fallback_shuffle", "require_approval"):
+            elif key == "auto_approval_threshold":
+                val = _number(key, val, 50, 100)
+            elif key == "auto_approval_prompt":
+                if val is not None and not isinstance(val, str):
+                    raise ApiError(400, f"{key} must be a string or null")
+                val = (val or "").replace("\r", "").strip()[:2000]  # "" = built-in default
+            elif key == "auto_approval_model":
+                if val is not None and not isinstance(val, str):
+                    raise ApiError(400, f"{key} must be a string or null")
+                val = (val or "").strip() or DEFAULT_MODEL
+                if len(val) > 100 or not all(c.isalnum() or c in "._:/~-" for c in val):
+                    raise ApiError(400, "Invalid model name")
+            elif key == "auto_approval_provider":
+                if val not in PROVIDERS:
+                    raise ApiError(400, "auto_approval_provider must be one of " + ", ".join(PROVIDERS))
+            elif key in ("requests_open", "fallback_shuffle", "require_approval", "auto_approval"):
                 if not isinstance(val, bool):
                     raise ApiError(400, f"{key} must be true or false")
             elif key == "party_name":
@@ -913,8 +1073,10 @@ class Party:
             clean.pop("require_approval")
             await self.set_require_approval(False, None)
         old_pl = self._settings.get("fallback_playlist_id")
+        was_reviewing = self.auto_review_enabled()
         old_shuffle = self._settings.get("fallback_shuffle")
         self._settings = await self.db.set_settings(clean)
+        self._sync_reviewer()
         if self._settings.get("fallback_playlist_id") != old_pl:
             self.fallback_tracks, self.fallback_order, self.fallback_ptr = [], [], 0
             self.fallback_played.clear()
@@ -923,6 +1085,9 @@ class Party:
             self._reshuffle()
         if self.engine:
             self.engine.poke()
+        if self.auto_review_enabled() and not was_reviewing:
+            # just switched on: check what's already waiting
+            self._spawn(self.review_pending(), "review-pending")
         self.changed()
         return self._settings
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api } from "../../api/client";
-import type { SongRequest } from "../../api/types";
+import type { AutoReview, SongRequest } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { TrackRow } from "../../components/TrackRow";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -55,6 +55,22 @@ export function RequestsTab() {
     try {
       await fn();
       flash.ok(msg);
+    } catch (e) {
+      flash.err(e);
+    } finally {
+      setBusy((b) => {
+        const n = new Set(b);
+        n.delete(r.id);
+        return n;
+      });
+      load();
+    }
+  };
+
+  const recheck = async (r: SongRequest) => {
+    setBusy((b) => new Set(b).add(r.id));
+    try {
+      await api.recheck(r.id);
     } catch (e) {
       flash.err(e);
     } finally {
@@ -216,6 +232,14 @@ export function RequestsTab() {
                   {r.speaker ? `via ${r.speaker} · ` : ""}
                   {timeAgo(r.created_at, clockOffset)}
                   {r.decided_by && r.status !== "pending" ? ` · by ${r.decided_by}` : ""}
+                  {r.auto && (
+                    <AutoNote
+                      auto={r.auto}
+                      pending={r.status === "pending"}
+                      busy={busy.has(r.id)}
+                      onRecheck={state?.auto_approval ? () => void recheck(r) : undefined}
+                    />
+                  )}
                 </span>
               }
               actions={
@@ -246,7 +270,7 @@ export function RequestsTab() {
                     </button>
                   </div>
                 ) : (
-                  r.status === "approved" && !r.decided_by ? (
+                  r.status === "approved" && !r.decided_by && r.auto?.status !== "approved" ? (
                     <span className="status-text" title="Approved automatically while approval was off">
                       Auto-approved
                     </span>
@@ -262,5 +286,42 @@ export function RequestsTab() {
       </div>
       {confirmDialog}
     </div>
+  );
+}
+
+const pct = (p: number | null) => (p === null ? "" : `${Math.round(p * 100)}%`);
+
+/** What Jev made of a request: shown after the request's meta line. */
+function AutoNote({ auto, pending, busy, onRecheck }: { auto: AutoReview; pending: boolean; busy: boolean; onRecheck?: () => void }) {
+  const note = auto.note ? ` · ${auto.note}` : "";
+  const lean = auto.decision === "reject" ? "reject" : "approve";
+  let text: string;
+  let warn = false;
+  if (auto.status === "checking") text = "Checking with Jev…";
+  else if (auto.status === "error") {
+    text = `Jev check failed${note}`;
+    warn = true;
+  } else if (auto.status === "flagged") {
+    text = `Flagged: Jev leans ${lean} (${pct(auto.probability)} sure)${note}`;
+    warn = true;
+  } else text = `by Jev, ${pct(auto.probability)} sure${note}`;
+  // Decisions Jev made itself only show while the request is decided; flagged/error notes only while waiting.
+  const decided = auto.status === "approved" || auto.status === "rejected";
+  if (decided === pending) return null;
+  return (
+    <>
+      <br />
+      <span className={cx(warn && "warn-text")} title={auto.note ?? undefined}>
+        {text}
+      </span>
+      {pending && onRecheck && (auto.status === "error" || auto.status === "flagged") && (
+        <>
+          {" · "}
+          <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={onRecheck}>
+            Check again
+          </button>
+        </>
+      )}
+    </>
   );
 }

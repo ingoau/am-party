@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api/client";
-import type { AdminStatus, AppleMusicStatus, CrossfadeMode, Playlist, Settings } from "../../api/types";
+import type { AdminStatus, AppleMusicStatus, AutoApprovalStatus, CrossfadeMode, JevProvider, Playlist, Settings } from "../../api/types";
 import { Artwork } from "../../components/Artwork";
 import { Check } from "lucide-react";
 import { TV_TEXT_DEFAULTS, cx, fmtDate } from "../../util";
@@ -184,6 +184,8 @@ export function SettingsTab() {
             </label>
             <RequireApprovalSwitch />
           </section>
+
+          <AutoApprovalCard draft={draft} set={set} flush={flush} />
 
           <section className="card">
             <h2 className="card__title">TV screen</h2>
@@ -602,6 +604,181 @@ function AppleMusicCard({ onChange }: { onChange: () => void }) {
           </details>
         </>
       )}
+    </section>
+  );
+}
+
+const JEV_PROVIDERS: { id: JevProvider; label: string; keyUrl: string }[] = [
+  { id: "typesafe", label: "TypeSafe", keyUrl: "console.typesafe.ai" },
+  { id: "openrouter", label: "OpenRouter", keyUrl: "openrouter.ai/settings/keys" },
+];
+
+function AutoApprovalCard({ draft, set, flush }: { draft: Settings; set: SetSetting; flush: () => Promise<void> }) {
+  const [info, setInfo] = useState<AutoApprovalStatus | null>(null);
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const { state: live } = useLive();
+  const requireApproval = live?.require_approval ?? draft.require_approval;
+
+  useEffect(() => {
+    api.autoApproval().then(setInfo).catch(flash.err);
+  }, []);
+
+  const provider = draft.auto_approval_provider;
+  const providerInfo = JEV_PROVIDERS.find((p) => p.id === provider) ?? JEV_PROVIDERS[0];
+  const keySource = info?.api_key_sources[provider] ?? null;
+
+  const putKey = async (value: string, msg: string) => {
+    setSaving(true);
+    try {
+      setInfo(await api.putAutoApprovalKey(provider, value));
+      setKey("");
+      flash.ok(msg);
+    } catch (e) {
+      flash.err(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const threshold = draft.auto_approval_threshold;
+  const pill = !draft.auto_approval
+    ? { cls: "pill--off", text: "Off" }
+    : !keySource
+      ? { cls: "pill--err", text: "No API key" }
+      : !requireApproval
+        ? { cls: "pill--off", text: "Approval off" }
+        : { cls: "pill--ok", text: "On" };
+
+  return (
+    <section className="card am-card">
+      <div className="am-card__head">
+        <h2 className="card__title">Automatic approval</h2>
+        {info && <span className={cx("pill", pill.cls)}>{pill.text}</span>}
+      </div>
+      <p className="field__hint">
+        New requests get their lyrics looked up, then Jev decides whether to approve or reject them. When Jev is less
+        sure than the threshold, the request waits for a person, marked as flagged.
+      </p>
+      <label className="switch-row">
+        <input type="checkbox" role="switch" checked={draft.auto_approval} onChange={(e) => set("auto_approval", e.target.checked)} />
+        <span className="switch" aria-hidden />
+        <span>Let Jev approve and reject requests</span>
+      </label>
+      {draft.auto_approval && !requireApproval && (
+        <span className="field__hint warn-text">Approval is off, so every request is accepted without a check.</span>
+      )}
+
+      <label className="field">
+        <span className="field__label">
+          Certainty needed <span className="field__value">{threshold}%</span>
+        </span>
+        <input
+          type="range"
+          className="range"
+          min={50}
+          max={100}
+          step={1}
+          value={threshold}
+          style={{ ["--val" as string]: `${((threshold - 50) / 50) * 100}%` }}
+          onChange={(e) => set("auto_approval_threshold", Number(e.target.value), 400)}
+        />
+        <span className="field__hint">Below this, a person decides. At 100% almost everything waits for a person.</span>
+      </label>
+
+      <label className="field">
+        <span className="field__label">Prompt for Jev</span>
+        <textarea
+          className="input"
+          rows={4}
+          value={draft.auto_approval_prompt}
+          maxLength={2000}
+          placeholder={info?.default_prompt}
+          onChange={(e) => set("auto_approval_prompt", e.target.value, 700)}
+          onBlur={() => void flush()}
+        />
+        <span className="field__hint">
+          What should be approved or rejected. Jev also gets the song name, artist, album, explicit rating and lyrics. Leave
+          blank for the default shown.
+        </span>
+      </label>
+
+      <details className="advanced" open={!!info && !keySource}>
+        <summary>Provider, API key and model</summary>
+        <div className="field">
+          <span className="field__label">Provider</span>
+          <div className="segmented" role="radiogroup" aria-label="Jev provider">
+            {JEV_PROVIDERS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                role="radio"
+                aria-checked={provider === p.id}
+                className={cx(provider === p.id && "is-active")}
+                onClick={() => {
+                  setKey("");
+                  set("auto_approval_provider", p.id);
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <span className="field__hint">
+            {provider === "openrouter"
+              ? "Jev through OpenRouter, billed to your OpenRouter account."
+              : "Jev straight from TypeSafe."}
+          </span>
+        </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (key.trim()) void putKey(key.trim(), "API key saved");
+          }}
+        >
+          <label className="field">
+            <span className="field__label">{providerInfo.label} API key</span>
+            <input
+              className="input input--mono"
+              type="password"
+              value={key}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder={
+                keySource === "db"
+                  ? "Saved. Paste a new key to replace it"
+                  : keySource === "env"
+                    ? "Set by server config. A key saved here takes precedence"
+                    : `Get one at ${providerInfo.keyUrl}`
+              }
+            />
+          </label>
+          <div className="btn-group btn-group--wrap">
+            <button className="btn btn--primary" type="submit" disabled={saving || !key.trim()}>
+              Save key
+            </button>
+            {keySource === "db" && (
+              <button type="button" className="btn btn--danger-ghost" disabled={saving} onClick={() => void putKey("", "API key cleared")}>
+                Clear stored key
+              </button>
+            )}
+          </div>
+        </form>
+        <label className="field">
+          <span className="field__label">Model</span>
+          <input
+            className="input input--mono"
+            value={draft.auto_approval_model}
+            maxLength={100}
+            placeholder={info?.default_model}
+            spellCheck={false}
+            onChange={(e) => set("auto_approval_model", e.target.value, 700)}
+            onBlur={() => void flush()}
+          />
+          <span className="field__hint">jev-latest follows the newest Jev; pin a version such as jev-1.14 to keep decisions stable.</span>
+        </label>
+      </details>
     </section>
   );
 }
