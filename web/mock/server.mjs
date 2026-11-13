@@ -78,9 +78,7 @@ const settings = {
   fallback_shuffle: true,
   crossfade_mode: "smart",
   crossfade_duration: 6,
-  max_pending_per_guest: 3,
-  request_cooldown_seconds: 30,
-  speaker_naming_notes: "",
+  request_rate_limits: [{ requests: 10, seconds: 600 }],  speaker_naming_notes: "",
   auto_approval: true,
   auto_approval_threshold: 90,
   auto_approval_prompt: "",
@@ -348,8 +346,13 @@ const server = http.createServer(async (req, res) => {
     if (!t) return err(res, 400, "Unknown track");
     if (upcoming.some((u) => u.track.id === track_id) || requests.some((r) => r.track.id === track_id && r.status === "pending"))
       return err(res, 409, "Already queued or pending");
-    if (requests.filter((r) => r.guest === guest && r.status === "pending").length >= settings.max_pending_per_guest)
-      return err(res, 429, `You already have ${settings.max_pending_per_guest} songs waiting for approval.`);
+    const limit = settings.request_rate_limits?.[0];
+    if (limit) {
+      const since = now() - limit.seconds;
+      const used = requests.filter((r) => r.guest === guest && r.created_at > since).length;
+      if (used >= limit.requests)
+        return err(res, 429, `You can request ${limit.requests} songs every ${Math.round(limit.seconds / 60)} minutes.`);
+    }
     const r = { id: nextId++, track: t, status: "pending", created_at: now(), decided_at: null, decided_by: null, guest_label: `Guest ${guest.slice(0, 4).toUpperCase()}`, guest };
     requests.unshift(r);
     if (!settings.require_approval) {

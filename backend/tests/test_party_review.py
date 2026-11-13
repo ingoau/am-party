@@ -19,7 +19,7 @@ async def make_party(tmp_path: Path) -> Party:
     await db.open()
     party = Party(db, apple=None, hub=Hub())
     await party.load()
-    await party.update_settings({"request_cooldown_seconds": 0, "max_pending_per_guest": 10})
+    await party.update_settings({"request_rate_limits": []})
     for i in range(5):
         party._cache_track(Track(id=str(i), title=f"Song {i}", artist="A"))  # noqa: SLF001
     return party
@@ -36,10 +36,15 @@ async def make_party(tmp_path: Path) -> Party:
         {"crossfade_duration": 1e309},
         {"crossfade_duration": 0},
         {"crossfade_duration": 99},
-        {"request_cooldown_seconds": None},
-        {"request_cooldown_seconds": -1},
-        {"max_pending_per_guest": 0},
-        {"max_pending_per_guest": True},
+        {"request_rate_limits": None},
+        {"request_rate_limits": "10/600"},
+        {"request_rate_limits": [{"requests": 0, "seconds": 60}]},
+        {"request_rate_limits": [{"requests": 5, "seconds": 0}]},
+        {"request_rate_limits": [{"requests": True, "seconds": 60}]},
+        {"request_rate_limits": [{"requests": 5, "seconds": 60.5}]},
+        {"request_rate_limits": [{"requests": 5}]},
+        {"request_rate_limits": ["10 per 10 minutes"]},
+        {"request_rate_limits": [{"requests": 1, "seconds": 60}] * 6},
         {"requests_open": "false"},
         {"require_approval": 0},
         {"party_name": 42},
@@ -62,11 +67,26 @@ async def test_bad_settings_rejected(tmp_path: Path, patch: dict[str, Any]) -> N
 async def test_good_settings(tmp_path: Path) -> None:
     p = await make_party(tmp_path)
     s = await p.update_settings(
-        {"crossfade_duration": 12, "requests_open": False, "party_name": None, "max_pending_per_guest": 1}
+        {
+            "crossfade_duration": 12,
+            "requests_open": False,
+            "party_name": None,
+            "request_rate_limits": [
+                {"requests": 20, "seconds": 3600},
+                {"requests": 10, "seconds": 600},
+                {"requests": 10, "seconds": 600},
+            ],
+        }
     )
     assert s["crossfade_duration"] == 12 and s["requests_open"] is False
     assert s["party_name"] == "Party"  # null -> default, not "None"
-    assert s["max_pending_per_guest"] == 1
+    # sorted shortest window first; duplicate periods collapse
+    assert s["request_rate_limits"] == [
+        {"requests": 10, "seconds": 600},
+        {"requests": 20, "seconds": 3600},
+    ]
+    s = await p.update_settings({"request_rate_limits": []})
+    assert s["request_rate_limits"] == []
     s = await p.update_settings({"party_name": "  "})
     assert s["party_name"] == "Party"
     s = await p.update_settings({"tv_cta_text": "  Scan  me\n now ", "tv_empty_text": "x" * 200})
