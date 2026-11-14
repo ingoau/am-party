@@ -20,6 +20,11 @@ const PORT = Number(process.env.PORT || 8930);
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
 const LOGIN_AS = process.env.MOCK_USER || "admin";
 const now = () => Date.now() / 1000;
+const fmtPeriod = (s) => {
+  for (const [size, unit] of [[86400, "day"], [3600, "hour"], [60, "minute"], [1, "second"]])
+    if (s >= size && s % size === 0) return `${s / size} ${unit}${s / size === 1 ? "" : "s"}`;
+  return `${s} seconds`;
+};
 
 // ---------- Fake catalog ----------
 const PALETTE = [
@@ -351,7 +356,7 @@ const server = http.createServer(async (req, res) => {
       const since = now() - limit.seconds;
       const used = requests.filter((r) => r.guest === guest && r.created_at > since).length;
       if (used >= limit.requests)
-        return err(res, 429, `You can request ${limit.requests} songs every ${limit.seconds} seconds.`);
+        return err(res, 429, `You can request ${limit.requests} songs every ${fmtPeriod(limit.seconds)}.`);
     }
     const r = { id: nextId++, track: t, status: "pending", created_at: now(), decided_at: null, decided_by: null, guest_label: `Guest ${guest.slice(0, 4).toUpperCase()}`, guest };
     requests.unshift(r);
