@@ -87,7 +87,7 @@ CSP = "; ".join(
         "frame-ancestors 'none'",
     ]
 )
-PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+PERMISSIONS_POLICY = "camera=(self), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
 
 
 def _apply_security_headers(request: web.Request, headers: Any) -> None:
