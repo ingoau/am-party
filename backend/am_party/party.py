@@ -1156,16 +1156,21 @@ def _rate_limit_windows(value: Any) -> list[dict[str, int]]:
 
 
 def _human_seconds(seconds: float) -> str:
-    """'45 seconds', '10 minutes', '1 minute 30 seconds', '2 hours 5 minutes'."""
+    """'45 seconds', '10 minutes', '1 minute 30 seconds', '2 hours 5 minutes', '7 days'."""
+
+    def plural(n: int, unit: str) -> str:
+        return f"{n} {unit}" if n == 1 else f"{n} {unit}s"
+
     total = max(1, round(seconds))
-    if total < 60:
-        return f"{total} second" if total == 1 else f"{total} seconds"
-    minutes, secs = divmod(total, 60)
-    if minutes < 60:
-        out = f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
-        return f"{out} {secs} seconds" if secs else out
-    hours, mins = divmod(minutes, 60)
-    out = f"{hours} hour" if hours == 1 else f"{hours} hours"
-    if mins:
-        out += f" {mins} minute" if mins == 1 else f" {mins} minutes"
-    return out
+    for size, unit, sub_size, sub_unit in (
+        (86400, "day", 3600, "hour"),
+        (3600, "hour", 60, "minute"),
+        (60, "minute", 1, "second"),
+    ):
+        if total >= size:
+            whole, rest = divmod(total, size)
+            out = plural(whole, unit)
+            if rest // sub_size:
+                out += " " + plural(rest // sub_size, sub_unit)
+            return out
+    return plural(total, "second")

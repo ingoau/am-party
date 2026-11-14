@@ -9,7 +9,7 @@ import pytest
 
 from am_party.db import Database
 from am_party.models import Track
-from am_party.party import ApiError, Hub, Party
+from am_party.party import ApiError, Hub, Party, _human_seconds
 
 
 async def make_party(tmp_path: Path, limits: list[dict[str, int]] | None = None) -> Party:
@@ -113,3 +113,14 @@ async def test_invalid_periods_rejected(tmp_path: Path, patch: dict[str, Any]) -
     with pytest.raises(ApiError) as err:
         await p.update_settings(patch)
     assert err.value.status == 400
+
+
+def test_human_seconds() -> None:
+    assert _human_seconds(1) == "1 second"
+    assert _human_seconds(45) == "45 seconds"
+    assert _human_seconds(61) == "1 minute 1 second"
+    assert _human_seconds(600) == "10 minutes"
+    assert _human_seconds(3660) == "1 hour 1 minute"
+    assert _human_seconds(86400) == "1 day"
+    assert _human_seconds(7 * 86400) == "7 days"
+    assert _human_seconds(90000) == "1 day 1 hour"

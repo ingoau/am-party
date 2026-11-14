@@ -78,7 +78,8 @@ const settings = {
   fallback_shuffle: true,
   crossfade_mode: "smart",
   crossfade_duration: 6,
-  request_rate_limits: [{ requests: 10, seconds: 600 }],  speaker_naming_notes: "",
+  request_rate_limits: [{ requests: 10, seconds: 600 }],
+  speaker_naming_notes: "",
   auto_approval: true,
   auto_approval_threshold: 90,
   auto_approval_prompt: "",
@@ -346,12 +347,11 @@ const server = http.createServer(async (req, res) => {
     if (!t) return err(res, 400, "Unknown track");
     if (upcoming.some((u) => u.track.id === track_id) || requests.some((r) => r.track.id === track_id && r.status === "pending"))
       return err(res, 409, "Already queued or pending");
-    const limit = settings.request_rate_limits?.[0];
-    if (limit) {
+    for (const limit of settings.request_rate_limits || []) {
       const since = now() - limit.seconds;
       const used = requests.filter((r) => r.guest === guest && r.created_at > since).length;
       if (used >= limit.requests)
-        return err(res, 429, `You can request ${limit.requests} songs every ${Math.round(limit.seconds / 60)} minutes.`);
+        return err(res, 429, `You can request ${limit.requests} songs every ${limit.seconds} seconds.`);
     }
     const r = { id: nextId++, track: t, status: "pending", created_at: now(), decided_at: null, decided_by: null, guest_label: `Guest ${guest.slice(0, 4).toUpperCase()}`, guest };
     requests.unshift(r);
@@ -537,6 +537,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "PATCH") {
       const { require_approval, ...rest } = await readBody(req);
       Object.assign(settings, rest);
+      if (Array.isArray(rest.request_rate_limits)) {
+        // Like the backend: shortest period first, duplicates dropped.
+        const seen = new Set();
+        settings.request_rate_limits = rest.request_rate_limits
+          .sort((a, b) => a.seconds - b.seconds || a.requests - b.requests)
+          .filter((l) => !seen.has(`${l.requests}/${l.seconds}`) && seen.add(`${l.requests}/${l.seconds}`));
+      }
       if (typeof require_approval === "boolean" && require_approval !== settings.require_approval) {
         setRequireApproval(require_approval);
         requestsChanged();
