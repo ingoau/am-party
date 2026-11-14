@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { api } from "../../api/client";
 import type { AdminStatus, AppleMusicStatus, AutoApprovalStatus, CrossfadeMode, JevProvider, Playlist, RequestRateLimit, Settings } from "../../api/types";
 import { Artwork } from "../../components/Artwork";
-import { Check } from "lucide-react";
+import { Check, Plus, Trash2 } from "lucide-react";
 import { TV_TEXT_DEFAULTS, cx, fmtDate } from "../../util";
 import { PageHeader, flash } from "./common";
 import { RequireApprovalSwitch } from "./RequireApprovalSwitch";
@@ -818,97 +818,190 @@ function StatusItem({ label, ok, text }: { label: string; ok: boolean; text: str
 }
 
 const RATE_LIMIT_UNITS = [
-  { seconds: 1, suffix: "seconds" },
-  { seconds: 60, suffix: "minutes" },
-  { seconds: 3600, suffix: "hours" },
-  { seconds: 86400, suffix: "days" },
+  { seconds: 1, one: "second", many: "seconds" },
+  { seconds: 60, one: "minute", many: "minutes" },
+  { seconds: 3600, one: "hour", many: "hours" },
+  { seconds: 86400, one: "day", many: "days" },
 ] as const;
+const MAX_RATE_LIMITS = 5;
+const MAX_RATE_REQUESTS = 1000;
+const MAX_RATE_SECONDS = 7 * 86400;
+/** Offered in turn by "Add period", skipping any period length already in use. */
+const RATE_LIMIT_SUGGESTIONS: RequestRateLimit[] = [
+  { requests: 10, seconds: 600 },
+  { requests: 3, seconds: 60 },
+  { requests: 30, seconds: 3600 },
+  { requests: 100, seconds: 86400 },
+  { requests: 5, seconds: 300 },
+];
+
+/** One editable period. Numbers stay as typed text so a field can be cleared and retyped. */
+type RateRow = { id: number; requests: string; amount: string; unit: number };
+
+let rateRowId = 0;
 
 /** Show a stored period in its largest whole unit, e.g. 600 -> 10 minutes. */
-function periodParts(seconds: number): { amount: number; unit: number } {
-  for (const unit of [86400, 3600, 60]) {
-    if (seconds >= unit && seconds % unit === 0) return { amount: seconds / unit, unit };
-  }
-  return { amount: Math.max(1, seconds), unit: 1 };
+function toRateRow(limit: RequestRateLimit): RateRow {
+  const unit = [86400, 3600, 60].find((u) => limit.seconds >= u && limit.seconds % u === 0) ?? 1;
+  return { id: ++rateRowId, requests: String(limit.requests), amount: String(limit.seconds / unit), unit };
 }
 
-/** Per-guest request budget: any number of stacked periods, each "N songs per M minutes". */
+/** The period a row describes, or why it can't be saved yet. */
+function parseRateRow(row: RateRow): { limit: RequestRateLimit } | { error: string } {
+  const requests = Number(row.requests);
+  const amount = Number(row.amount);
+  if (row.requests.trim() === "" || !Number.isInteger(requests) || requests < 1 || requests > MAX_RATE_REQUESTS)
+    return { error: `Songs must be a whole number from 1 to ${MAX_RATE_REQUESTS}.` };
+  if (row.amount.trim() === "" || !Number.isInteger(amount) || amount < 1)
+    return { error: "The period must be a whole number, at least 1." };
+  if (amount * row.unit > MAX_RATE_SECONDS) return { error: "The longest period is 7 days." };
+  return { limit: { requests, seconds: amount * row.unit } };
+}
+
+/** The list as the server stores it: shortest period first, duplicates dropped. */
+function normalizeLimits(limits: RequestRateLimit[]): RequestRateLimit[] {
+  const seen = new Set<string>();
+  return [...limits]
+    .sort((a, b) => a.seconds - b.seconds || a.requests - b.requests)
+    .filter((l) => {
+      const key = `${l.requests}/${l.seconds}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+/**
+ * Per-guest request budget: up to five stacked periods, each "N songs every M minutes".
+ *
+ * Rows are edited locally and only a fully valid list is saved, so half-typed numbers aren't
+ * clamped under the cursor and rows don't reorder or vanish when the server sorts the list.
+ */
 function GuestLimitsCard({ limits, set }: { limits: RequestRateLimit[]; set: SetSetting }) {
-  const update = (next: RequestRateLimit[], debounceMs = 0) => set("request_rate_limits", next, debounceMs);
-  const patch = (i: number, changes: Partial<RequestRateLimit>, debounceMs = 0) =>
-    update(
-      limits.map((l, j) => (j === i ? { ...l, ...changes } : l)),
+  const [rows, setRows] = useState<RateRow[]>(() => limits.map(toRateRow));
+  const sentRef = useRef(JSON.stringify(normalizeLimits(limits)));
+
+  // Reload when the saved value changes underneath us (a failed save is rolled back), but not
+  // when it's just the server's sorted copy of what this card sent.
+  const savedKey = JSON.stringify(normalizeLimits(limits));
+  useEffect(() => {
+    if (savedKey === sentRef.current) return;
+    sentRef.current = savedKey;
+    setRows((JSON.parse(savedKey) as RequestRateLimit[]).map(toRateRow));
+  }, [savedKey]);
+
+  const parsed = rows.map(parseRateRow);
+  const keys = parsed.map((p) => ("limit" in p ? `${p.limit.requests}/${p.limit.seconds}` : null));
+
+  const commit = (next: RateRow[], debounceMs = 0) => {
+    setRows(next);
+    const valid: RequestRateLimit[] = [];
+    for (const r of next) {
+      const p = parseRateRow(r);
+      if ("error" in p) return; // keep the last saved list until every row is valid
+      valid.push(p.limit);
+    }
+    const normalized = normalizeLimits(valid);
+    sentRef.current = JSON.stringify(normalized);
+    set("request_rate_limits", normalized, debounceMs);
+  };
+  const edit = (id: number, changes: Partial<RateRow>, debounceMs = 0) =>
+    commit(
+      rows.map((r) => (r.id === id ? { ...r, ...changes } : r)),
       debounceMs,
     );
+  const add = () => {
+    const used = new Set(parsed.flatMap((p) => ("limit" in p ? [p.limit.seconds] : [])));
+    const pick = RATE_LIMIT_SUGGESTIONS.find((l) => !used.has(l.seconds)) ?? { requests: 10, seconds: 7 * 86400 };
+    commit([...rows, toRateRow(pick)]);
+  };
+
   return (
     <section className="card">
       <h2 className="card__title">Guest limits</h2>
       <p className="field__hint">
-        How many songs one guest can request per period. Every period applies, so a short one and a long one
-        together allow bursts without letting a guest take over the queue. With no periods, guests can request
-        without limit.
+        How many songs one guest can request in a period. Every period applies, so a short one and a long one
+        together allow a burst without letting a guest take over the queue.
       </p>
-      {limits.map((limit, i) => {
-        const { amount, unit } = periodParts(limit.seconds);
-        return (
-          <div className="field-row" key={i}>
-            <label className="field">
-              <span className="field__label">Requests</span>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={1000}
-                value={limit.requests}
-                onChange={(e) =>
-                  patch(i, { requests: Math.min(1000, Math.max(1, Number(e.target.value) || 1)) }, 700)
-                }
-              />
-            </label>
-            <label className="field">
-              <span className="field__label">Per</span>
-              <div className="field-row">
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={Math.floor(604800 / unit)}
-                  value={amount}
-                  onChange={(e) =>
-                    patch(i, { seconds: Math.min(604800, Math.max(1, Number(e.target.value) || 1) * unit) }, 700)
-                  }
-                />
-                <select
-                  className="input"
-                  aria-label="Period unit"
-                  value={unit}
-                  onChange={(e) => patch(i, { seconds: Math.min(604800, amount * Number(e.target.value)) })}
-                >
-                  {RATE_LIMIT_UNITS.map((u) => (
-                    <option key={u.seconds} value={u.seconds}>
-                      {u.suffix}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </label>
-            <button
-              className="btn btn--danger-ghost btn--sm"
-              type="button"
-              onClick={() => update(limits.filter((_, j) => j !== i))}
-            >
-              Remove
-            </button>
-          </div>
-        );
-      })}
-      {limits.length < 5 && (
-        <button
-          className="btn btn--ghost btn--sm"
-          type="button"
-          onClick={() => update([...limits, { requests: 10, seconds: 600 }])}
-        >
-          Add time period
+      {rows.length === 0 ? (
+        <p className="rate-limits__empty">No limit: guests can request as many songs as they like.</p>
+      ) : (
+        <ul className="rate-limits">
+          {rows.map((row, i) => {
+            const p = parsed[i];
+            const error = "error" in p ? p.error : keys.indexOf(keys[i]) < i ? "Same as the period above." : null;
+            const errorId = `rate-limit-error-${row.id}`;
+            const amount = Number(row.amount);
+            return (
+              <li key={row.id} className="rate-limit">
+                <div className="rate-limit__fields">
+                  <span className="rate-limit__group">
+                    <input
+                      className="input rate-limit__num"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={MAX_RATE_REQUESTS}
+                      step={1}
+                      value={row.requests}
+                      aria-label="Songs"
+                      aria-invalid={"error" in p || undefined}
+                      aria-describedby={error ? errorId : undefined}
+                      onChange={(e) => edit(row.id, { requests: e.target.value }, 700)}
+                    />
+                    <span className="rate-limit__text">{Number(row.requests) === 1 ? "song" : "songs"} every</span>
+                  </span>
+                  <span className="rate-limit__group">
+                    <input
+                      className="input rate-limit__num"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={Math.floor(MAX_RATE_SECONDS / row.unit)}
+                      step={1}
+                      value={row.amount}
+                      aria-label="Period length"
+                      aria-invalid={"error" in p || undefined}
+                      aria-describedby={error ? errorId : undefined}
+                      onChange={(e) => edit(row.id, { amount: e.target.value }, 700)}
+                    />
+                    <select
+                      className="input rate-limit__unit"
+                      aria-label="Period unit"
+                      value={row.unit}
+                      onChange={(e) => edit(row.id, { unit: Number(e.target.value) })}
+                    >
+                      {RATE_LIMIT_UNITS.map((u) => (
+                        <option key={u.seconds} value={u.seconds}>
+                          {amount === 1 ? u.one : u.many}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                  <button
+                    className="icon-btn icon-btn--danger rate-limit__remove"
+                    type="button"
+                    aria-label="Remove this period"
+                    title="Remove"
+                    onClick={() => commit(rows.filter((r) => r.id !== row.id))}
+                  >
+                    <Trash2 size={18} aria-hidden />
+                  </button>
+                </div>
+                {error && (
+                  <span className="field__error" id={errorId}>
+                    {error}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {rows.length < MAX_RATE_LIMITS && (
+        <button className="btn btn--sm" type="button" onClick={add}>
+          <Plus size={16} aria-hidden />
+          Add period
         </button>
       )}
     </section>
