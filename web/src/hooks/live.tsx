@@ -5,7 +5,7 @@ import type { State, WsMessage } from "../api/types";
 export type ConnStatus = "connecting" | "live" | "polling" | "offline";
 
 /** Socket pushes components can subscribe to (everything except state / pong). */
-export type LiveEvent = "requests_changed" | "users_changed" | "speakers_changed" | "speaker_changed";
+export type LiveEvent = "requests_changed" | "users_changed" | "speakers_changed" | "speaker_changed" | "audit_changed";
 export type LiveMessage<E extends LiveEvent = LiveEvent> = Extract<WsMessage, { type: E }>;
 type Listener = (msg: LiveMessage) => void;
 
@@ -146,7 +146,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
           msg.type === "requests_changed" ||
           msg.type === "users_changed" ||
           msg.type === "speakers_changed" ||
-          msg.type === "speaker_changed"
+          msg.type === "speaker_changed" ||
+          msg.type === "audit_changed"
         )
           emit(msg);
       };

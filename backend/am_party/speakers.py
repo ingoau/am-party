@@ -612,6 +612,10 @@ class SpeakerManager:
         self._shares[share.token] = share
         return {"token": share.token, "expires_at": share.expires_at, "mode": mode}
 
+    def peek_share(self, token: Any) -> Share | None:
+        """The open share for a token, without using it up (for the audit log)."""
+        return self._shares.get(token) if isinstance(token, str) else None
+
     def _share(self, token: Any) -> Share:
         self._prune_shares()
         share = self._shares.get(token) if isinstance(token, str) else None

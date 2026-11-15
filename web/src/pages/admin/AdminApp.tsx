@@ -4,13 +4,14 @@ import { api, ApiError } from "../../api/client";
 import type { Me, User } from "../../api/types";
 import { useLive, useLiveEvent } from "../../hooks/live";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
-import { Inbox, ListMusic, LogOut, Settings, Speaker, Tv, Users } from "lucide-react";
+import { History as HistoryIcon, Inbox, ListMusic, LogOut, Settings, Speaker, Tv, Users } from "lucide-react";
 import { Toaster } from "../../components/Toaster";
 import { RequestsTab } from "./RequestsTab";
 import { QueueTab } from "./QueueTab";
 import { UsersTab } from "./UsersTab";
 import { SettingsTab } from "./SettingsTab";
 import { SpeakersTab } from "./SpeakersTab";
+import { AuditTab } from "./AuditTab";
 import { can, canQueueTab } from "./permissions";
 import "../../styles/admin.css";
 
@@ -20,6 +21,7 @@ const SECTIONS: Section[] = [
   { path: "requests", label: "Requests", icon: <Inbox size={20} />, allowed: (u) => can(u, "approve_requests") },
   { path: "queue", label: "Queue", icon: <ListMusic size={20} />, allowed: canQueueTab },
   { path: "speakers", label: "Speakers", icon: <Speaker size={20} />, allowed: (u) => can(u, "claim_speakers") },
+  { path: "audit", label: "Audit log", icon: <HistoryIcon size={20} />, allowed: (u) => can(u, "view_audit_log") },
   { path: "users", label: "People", icon: <Users size={20} />, allowed: (u) => u.is_admin },
   { path: "settings", label: "Settings", icon: <Settings size={20} />, allowed: (u) => u.is_admin },
 ];
@@ -151,6 +153,7 @@ export default function AdminApp() {
           {can(user, "approve_requests") && <Route path="requests/*" element={<RequestsTab />} />}
           {canQueueTab(user) && <Route path="queue" element={<QueueTab me={user} />} />}
           {can(user, "claim_speakers") && <Route path="speakers" element={<SpeakersTab me={user} />} />}
+          {can(user, "view_audit_log") && <Route path="audit" element={<AuditTab />} />}
           {user.is_admin && <Route path="users" element={<UsersTab me={user} />} />}
           {user.is_admin && <Route path="settings" element={<SettingsTab />} />}
           <Route path="*" element={<Navigate to={`/admin/${allowed[0].path}`} replace />} />

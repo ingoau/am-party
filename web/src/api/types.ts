@@ -95,7 +95,8 @@ export type Permission =
   | "queue_remove"
   | "playback_skip"
   | "playback_pause"
-  | "claim_speakers";
+  | "claim_speakers"
+  | "view_audit_log";
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
   "approve_requests",
@@ -105,6 +106,7 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "playback_skip",
   "playback_pause",
   "claim_speakers",
+  "view_audit_log",
 ];
 
 /** Anything that unlocks the Queue tab. */
@@ -270,4 +272,43 @@ export type WsMessage =
   | { type: "users_changed" }
   | { type: "speakers_changed" }
   | { type: "speaker_changed"; id: string }
+  | { type: "audit_changed" }
   | { type: "pong"; server_time: number };
+
+// ---------- Audit log (view_audit_log) ----------
+
+export type AuditActorKind = "user" | "guest" | "system" | "device";
+
+export type AuditEntry = {
+  id: number;
+  /** unix seconds */
+  at: number;
+  /** e.g. "request.approve", "queue.add", "player.skip", "settings.update" */
+  action: string;
+  actor: {
+    kind: AuditActorKind;
+    /** user id (null once the user is deleted) */
+    id: number | null;
+    /** snapshot at the time; "Jev (automatic review)" for Jev */
+    name: string | null;
+    /** "Guest 1A2B", same label as in the requests list */
+    guest: string | null;
+  };
+  target: { type: string | null; id: string | null; label: string | null } | null;
+  /** action-specific, e.g. {track, position}, {changes} */
+  details: Record<string, unknown> | null;
+  /** admins only */
+  ip?: string | null;
+};
+
+export type AuditPage = { entries: AuditEntry[]; next_before: number | null };
+
+export type AuditQuery = {
+  before?: number | null;
+  limit?: number;
+  /** exact action, or a prefix ending in "." (e.g. "queue.") */
+  action?: string;
+  actor?: number | null;
+  actor_kind?: AuditActorKind | null;
+  q?: string;
+};

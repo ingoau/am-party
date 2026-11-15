@@ -16,6 +16,7 @@ export const FALLBACK_CATALOG: PermissionInfo[] = [
   { id: "playback_skip", label: "Skip songs", description: "Skip, go back or seek within the current song for every device", group: "Playback" },
   { id: "playback_pause", label: "Pause & resume", description: "Pause and resume playback for every device", group: "Playback" },
   { id: "claim_speakers", label: "Claim speakers", description: "Claim speakers by scanning their QR code and control the ones you own", group: "Speakers" },
+  { id: "view_audit_log", label: "View audit log", description: "See who did what: approvals, queue changes, skips, settings and sign-ins", group: "Oversight" },
 ];
 
 export type Preset = { id: string; label: string; description: string; permissions: Permission[] };

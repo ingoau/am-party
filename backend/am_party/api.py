@@ -15,9 +15,10 @@ from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
 
+from .audit import ACTOR_KINDS, track_label, track_ref
 from .auth import SESSION_COOKIE, client_ip, guest_id, set_guest_cookie
 from .party import ApiError
-from .security import valid_track_id
+from .security import SlidingWindow, valid_track_id
 
 if TYPE_CHECKING:
     from .app import AmParty
@@ -199,6 +200,23 @@ def ip_of(request: web.Request) -> str:
     return client_ip(request, enc(request).config.trusted_proxy)
 
 
+async def audit(request: web.Request, action: str, user: Any, **kw: Any) -> None:
+    """Record a staff action in the audit log."""
+    await enc(request).party.audit.record(action, user=user, **kw)
+
+
+def speaker_targets(speakers: list[dict[str, Any]]) -> dict[str, Any]:
+    names = [s["name"] for s in speakers]
+    return {
+        "target_type": "speaker",
+        "target_id": ",".join(s["id"] for s in speakers) or None,
+        "target_label": ", ".join(names) if len(names) <= 5 else f"{len(names)} speakers",
+    }
+
+
+# Speaker pages rename without signing in: cap the audit entries one speaker can cause.
+RENAME_AUDIT: SlidingWindow[str] = SlidingWindow(5, 60, 10_000)
+
 WS_MAX_MSG = 4096
 WS_PING_INTERVAL = 0.5  # pings faster than 2/s are ignored
 
@@ -280,7 +298,7 @@ async def withdraw_request(request: web.Request) -> web.Response:
     gid, new = guest(request)
     if new:
         raise ApiError(404, "Request not found")
-    await enc(request).party.withdraw_request(gid, int_param(request, "id"))
+    await enc(request).party.withdraw_request(gid, int_param(request, "id"), ip=ip_of(request))
     return web.json_response({"ok": True})
 
 
@@ -395,8 +413,8 @@ async def reject(request: web.Request) -> web.Response:
 async def recheck(request: web.Request) -> web.Response:
     """Run the automatic (Jev) review again on a waiting request."""
     csrf_check(request)
-    await enc(request).auth.require(request, "approve_requests")
-    await enc(request).party.recheck_request(int_param(request, "id"))
+    user = await enc(request).auth.require(request, "approve_requests")
+    await enc(request).party.recheck_request(int_param(request, "id"), user)
     return web.json_response({"ok": True})
 
 
@@ -422,22 +440,22 @@ async def queue_add(request: web.Request) -> web.Response:
 @routes.delete("/api/admin/queue/{id}")
 async def queue_remove(request: web.Request) -> web.Response:
     csrf_check(request)
-    await enc(request).auth.require(request, "queue_remove")
-    await enc(request).party.remove_from_queue(int_param(request, "id"))
+    user = await enc(request).auth.require(request, "queue_remove")
+    await enc(request).party.remove_from_queue(int_param(request, "id"), user)
     return web.json_response({"ok": True})
 
 
 @routes.post("/api/admin/queue/{id}/move")
 async def queue_move(request: web.Request) -> web.Response:
     csrf_check(request)
-    await enc(request).auth.require(request, "queue_reorder")
+    user = await enc(request).auth.require(request, "queue_reorder")
     data = await body(request)
     index = data.get("index")
     if index is None:
         raise ApiError(400, "index is required")
     if isinstance(index, bool) or not isinstance(index, int):
         raise ApiError(400, "index must be an integer")
-    await enc(request).party.move_in_queue(int_param(request, "id"), index)
+    await enc(request).party.move_in_queue(int_param(request, "id"), index, user)
     return web.json_response({"ok": True})
 
 
@@ -447,8 +465,17 @@ async def player_action(request: web.Request) -> web.Response:
     e = enc(request)
     action = request.match_info["action"]
     perm = "playback_skip" if action in ("skip", "previous", "seek") else "playback_pause"
-    await e.auth.require(request, perm)
+    user = await e.auth.require(request, perm)
+    now_playing = e.engine.now.candidate if e.engine.now else None
+    was_paused = e.engine.paused
+    audit: dict[str, Any] = {}
     if action == "skip":
+        # what plays instead: the track already being mixed in, else the party's next pick
+        upcoming = e.engine.locked or e.party.peek_next()
+        audit = {
+            "at": round(e.engine.position(), 1) if now_playing else None,
+            "next": {**track_ref(upcoming.track), "source": upcoming.source} if upcoming else None,
+        }
         e.engine.skip()
     elif action == "previous":
         data = await body(request)
@@ -458,15 +485,18 @@ async def player_action(request: web.Request) -> web.Response:
         track_id = data.get("track_id")
         if track_id is not None and not isinstance(track_id, str):
             raise ApiError(400, "track_id must be a string")
-        result = await e.party.previous(None if at is None else float(at), track_id)
+        result = await e.party.previous(None if at is None else float(at), track_id, user)
         return web.json_response({"ok": True, "result": result})
     elif action == "seek":
         data = await body(request)
         pos = data.get("position")
         if isinstance(pos, bool) or not isinstance(pos, (int, float)) or not math.isfinite(pos):
             raise ApiError(400, "position must be a number of seconds")
+        before = e.engine.position() if e.engine.now else None
         if not e.engine.seek(float(pos)):
             raise ApiError(409, "Nothing is playing")
+        # engine.seek clamps to the song: record where it actually went
+        audit = {"from": None if before is None else round(before, 1), "to": round(e.engine.position(), 1)}
     elif action == "pause":
         await e.engine.pause()
     elif action == "resume":
@@ -474,6 +504,25 @@ async def player_action(request: web.Request) -> web.Response:
     else:
         raise ApiError(404, "Unknown action")
     e.party.changed()
+    track = now_playing.track if now_playing else None
+    noop = (
+        (action == "skip" and now_playing is None)
+        or (action == "pause" and was_paused)
+        or (action == "resume" and not was_paused)
+    )
+    if noop:
+        return web.json_response({"ok": True})
+    await e.party.audit.record(
+        f"player.{action}",
+        user=user,
+        target_type="track" if track else None,
+        target_id=track.id if track else None,
+        target_label=track_label(track) if track else None,
+        details={
+            **({"track": track_ref(track), "source": now_playing.source} if track and now_playing else {}),
+            **audit,
+        },
+    )
     return web.json_response({"ok": True})
 
 
@@ -491,9 +540,22 @@ async def speaker_self(request: web.Request) -> web.Response:
 async def speaker_self_name(request: web.Request) -> web.Response:
     csrf_check(request)
     data = await body(request)
-    return web.json_response(
-        await enc(request).speakers.device_rename(data.get("client_id"), data.get("name"))
+    e = enc(request)
+    before = await e.speakers.device_view(data.get("client_id"))
+    view = await e.speakers.device_rename(data.get("client_id"), data.get("name"))
+    if view.get("name") == before.get("name") or not RENAME_AUDIT.check_and_hit(view["id"]):
+        return web.json_response(view)
+    await e.party.audit.record(
+        "speaker.rename",
+        actor_kind="device",
+        actor_name=f"Speaker {before.get('name') or ''}".strip(),
+        ip=ip_of(request),
+        target_type="speaker",
+        target_id=view.get("id"),
+        target_label=view.get("name"),
+        details={"from": before.get("name"), "to": view.get("name"), "by": "speaker page"},
     )
+    return web.json_response(view)
 
 
 async def speaker_owner(request: web.Request) -> Any:
@@ -519,7 +581,9 @@ async def speaker_claim(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
     data = await body(request)
-    return web.json_response({"speaker": await enc(request).speakers.claim(user, data.get("token"))})
+    speaker = await enc(request).speakers.claim(user, data.get("token"))
+    await audit(request, "speaker.claim", user, **speaker_targets([speaker]))
+    return web.json_response({"speaker": speaker})
 
 
 @routes.post("/api/speakers/control")
@@ -527,7 +591,10 @@ async def speakers_control(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
     data = await body(request)
-    return web.json_response({"speakers": await enc(request).speakers.control(user, data)})
+    speakers = await enc(request).speakers.control(user, data)
+    changes = {k: data[k] for k in ("volume", "volume_delta", "muted", "locked") if data.get(k) is not None}
+    await audit(request, "speaker.control", user, **speaker_targets(speakers), details=changes)
+    return web.json_response({"speakers": speakers})
 
 
 @routes.post("/api/speakers/share")
@@ -535,7 +602,14 @@ async def speakers_share(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
     data = await body(request)
-    return web.json_response(await enc(request).speakers.create_share(user, data))
+    e = enc(request)
+    share = await e.speakers.create_share(user, data)
+    views = [v for v in await e.speakers.list_for(user) if v["id"] in set(data.get("ids") or [])]
+    await audit(
+        request, "speaker.share", user, **speaker_targets(views),
+        details={"mode": share["mode"], "expires_at": share["expires_at"]},
+    )
+    return web.json_response(share)
 
 
 @routes.get("/api/speakers/share/{token}")
@@ -550,7 +624,14 @@ async def speakers_share_preview(request: web.Request) -> web.Response:
 async def speakers_share_accept(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
-    speakers = await enc(request).speakers.accept_share(user, request.match_info["token"])
+    e = enc(request)
+    share = e.speakers.peek_share(request.match_info["token"])
+    speakers = await e.speakers.accept_share(user, request.match_info["token"])
+    await audit(
+        request, "speaker.share_accept", user, **speaker_targets(speakers),
+        details={"mode": share.mode, "from": share.by_name, "from_user_id": share.by_user_id}
+        if share else None,
+    )
     return web.json_response({"speakers": speakers})
 
 
@@ -559,7 +640,14 @@ async def speakers_assign(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
     data = await body(request)
-    return web.json_response({"speakers": await enc(request).speakers.assign(user, data)})
+    e = enc(request)
+    speakers = await e.speakers.assign(user, data)
+    to = await e.db.fetchone("SELECT id, name, email FROM users WHERE id=?", data.get("user_id"))
+    await audit(
+        request, "speaker.assign", user, **speaker_targets(speakers),
+        details={"user_id": data.get("user_id"), "user": (to or {}).get("name") or (to or {}).get("email")},
+    )
+    return web.json_response({"speakers": speakers})
 
 
 @routes.patch("/api/speakers/{id}")
@@ -567,7 +655,16 @@ async def speaker_update(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
     data = await body(request)
-    speaker = await enc(request).speakers.update(user, request.match_info["id"], data)
+    e = enc(request)
+    old = await e.db.fetchone("SELECT name, locked FROM speakers WHERE id=?", request.match_info["id"])
+    speaker = await e.speakers.update(user, request.match_info["id"], data)
+    changes: dict[str, Any] = {}
+    if old and old["name"] != speaker["name"]:
+        changes["name"] = {"from": old["name"], "to": speaker["name"]}
+    if old and bool(old["locked"]) != speaker["locked"]:
+        changes["locked"] = {"from": bool(old["locked"]), "to": speaker["locked"]}
+    if changes:
+        await audit(request, "speaker.update", user, **speaker_targets([speaker]), details=changes)
     return web.json_response({"speaker": speaker})
 
 
@@ -575,8 +672,15 @@ async def speaker_update(request: web.Request) -> web.Response:
 async def speaker_remove_owner(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
-    speaker = await enc(request).speakers.remove_owner(
-        user, request.match_info["id"], int_param(request, "user_id")
+    e = enc(request)
+    sid, uid = request.match_info["id"], int_param(request, "user_id")
+    row = await e.db.fetchone("SELECT name FROM speakers WHERE id=?", sid)
+    owner = await e.db.fetchone("SELECT name, email FROM users WHERE id=?", uid)
+    speaker = await e.speakers.remove_owner(user, sid, uid)
+    await audit(
+        request, "speaker.remove_owner", user,
+        target_type="speaker", target_id=sid, target_label=(row or {}).get("name"),
+        details={"user_id": uid, "user": (owner or {}).get("name") or (owner or {}).get("email")},
     )
     return web.json_response({"speaker": speaker})
 
@@ -585,7 +689,14 @@ async def speaker_remove_owner(request: web.Request) -> web.Response:
 async def speaker_forget(request: web.Request) -> web.Response:
     csrf_check(request)
     user = await speaker_owner(request)
-    await enc(request).speakers.forget(user, request.match_info["id"])
+    e = enc(request)
+    sid = request.match_info["id"]
+    row = await e.db.fetchone("SELECT name FROM speakers WHERE id=?", sid)
+    await e.speakers.forget(user, sid)
+    await audit(
+        request, "speaker.forget", user,
+        target_type="speaker", target_id=sid, target_label=(row or {}).get("name"),
+    )
     return web.json_response({"ok": True})
 
 
@@ -619,9 +730,12 @@ async def users(request: web.Request) -> web.Response:
 async def _apply_user_changes(
     e: AmParty, uids: list[int], is_admin: bool | None, set_: list[str] | None,
     add: list[str], remove: list[str],
-) -> None:
+) -> list[dict[str, Any]]:
+    """Apply the changes; returns what actually changed per user (for the audit log)."""
     from .auth import User, clean_permissions
 
+    changed: list[dict[str, Any]] = []
+    uids = list(dict.fromkeys(uids))  # [5, 5] is one user
     # one transaction so the last-admin check and the writes can't interleave
     # with another request's changes
     async with e.db.transaction():
@@ -640,6 +754,16 @@ async def _apply_user_changes(
             perms |= set(clean_permissions(add))
             perms -= set(clean_permissions(remove))
             admin_val = int(is_admin) if is_admin is not None else r["is_admin"]
+            granted, revoked = sorted(perms - set(user.granted)), sorted(set(user.granted) - perms)
+            if granted or revoked or bool(admin_val) != bool(r["is_admin"]):
+                change: dict[str, Any] = {"id": r["id"], "name": r["name"] or r["email"]}
+                if granted:
+                    change["granted"] = granted
+                if revoked:
+                    change["revoked"] = revoked
+                if bool(admin_val) != bool(r["is_admin"]):
+                    change["admin"] = bool(admin_val)
+                changed.append(change)
             await e.db.execute(
                 "UPDATE users SET permissions=?, is_admin=? WHERE id=?",
                 json.dumps(sorted(perms)),
@@ -648,6 +772,16 @@ async def _apply_user_changes(
             )
     await e.refresh_ws_users()
     await e.hub.send_all({"type": "users_changed"}, "signed_in")
+    return changed
+
+
+async def _audit_user_changes(request: web.Request, user: Any, changed: list[dict[str, Any]]) -> None:
+    for change in changed:
+        details = {k: v for k, v in change.items() if k not in ("id", "name")}
+        await audit(
+            request, "user.update", user,
+            target_type="user", target_id=change["id"], target_label=change["name"], details=details,
+        )
 
 
 def _perm_list(data: dict[str, Any], key: str) -> list[str] | None:
@@ -663,10 +797,10 @@ def _perm_list(data: dict[str, Any], key: str) -> list[str] | None:
 async def update_user(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "admin")
+    admin = await e.auth.require(request, "admin")
     data = await body(request)
     is_admin = data.get("is_admin")
-    await _apply_user_changes(
+    changed = await _apply_user_changes(
         e,
         [int_param(request, "id")],
         bool(is_admin) if is_admin is not None else None,
@@ -674,6 +808,7 @@ async def update_user(request: web.Request) -> web.Response:
         [],
         [],
     )
+    await _audit_user_changes(request, admin, changed)
     return web.json_response({"ok": True})
 
 
@@ -682,13 +817,13 @@ async def bulk_update_users(request: web.Request) -> web.Response:
     """Apply permission changes to several users at once."""
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "admin")
+    admin = await e.auth.require(request, "admin")
     data = await body(request)
     ids = data.get("user_ids")
     if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
         raise ApiError(400, "user_ids must be a non-empty list of ids")
     is_admin = data.get("is_admin")
-    await _apply_user_changes(
+    changed = await _apply_user_changes(
         e,
         ids,
         bool(is_admin) if is_admin is not None else None,
@@ -696,6 +831,7 @@ async def bulk_update_users(request: web.Request) -> web.Response:
         _perm_list(data, "add") or [],
         _perm_list(data, "remove") or [],
     )
+    await _audit_user_changes(request, admin, changed)
     return web.json_response({"ok": True, "updated": len(ids)})
 
 
@@ -719,6 +855,15 @@ async def delete_user(request: web.Request) -> web.Response:
         owned = await e.db.fetchall("SELECT speaker_id FROM speaker_owners WHERE user_id=?", uid)
         await e.db.execute("DELETE FROM users WHERE id=?", uid)
     e.speakers.owners_changed([r["speaker_id"] for r in owned])
+    await audit(
+        request, "user.delete", me_user,
+        target_type="user", target_id=uid, target_label=row["name"] or row["email"],
+        details={
+            "was_admin": bool(row["is_admin"]),
+            "permissions": json.loads(row["permissions"] or "[]"),
+            "speakers": [r["speaker_id"] for r in owned],
+        },
+    )
     await e.refresh_ws_users()
     await e.hub.send_all({"type": "users_changed"}, "signed_in")
     return web.json_response({"ok": True})
@@ -733,9 +878,9 @@ async def get_settings(request: web.Request) -> web.Response:
 @routes.patch("/api/admin/settings")
 async def patch_settings(request: web.Request) -> web.Response:
     csrf_check(request)
-    await enc(request).auth.require(request, "admin")
+    user = await enc(request).auth.require(request, "admin")
     data = await body(request)
-    return web.json_response(await enc(request).party.update_settings(data))
+    return web.json_response(await enc(request).party.update_settings(data, user))
 
 
 @routes.get("/api/admin/playlists")
@@ -771,6 +916,44 @@ async def status(request: web.Request) -> web.Response:
     return web.json_response(e.status())
 
 
+@routes.get("/api/admin/audit")
+async def audit_log(request: web.Request) -> web.Response:
+    """The audit log, newest first. Paged with ?before=<id>; filters: action (exact, or
+    a prefix ending in "."), actor (user id), actor_kind, q (free text)."""
+    e = enc(request)
+    user = await e.auth.require(request, "view_audit_log")
+    query = request.query
+
+    def int_query(name: str) -> int | None:
+        raw = query.get(name)
+        if raw in (None, ""):
+            return None
+        try:
+            value = int(raw)
+        except ValueError as err:
+            raise ApiError(400, f"Invalid {name}") from err
+        if not 0 <= value < 2**63:  # sqlite integers are 64-bit
+            raise ApiError(400, f"Invalid {name}")
+        return value
+
+    kind = query.get("actor_kind") or None
+    if kind is not None and kind not in ACTOR_KINDS:
+        raise ApiError(400, "Invalid actor_kind")
+    action = query.get("action") or None
+    if action is not None and (len(action) > 64 or not re.fullmatch(r"[a-z_.]+", action)):
+        raise ApiError(400, "Invalid action")
+    out = await e.party.audit.list(
+        before=int_query("before"),
+        limit=int_query("limit") or 100,
+        action=action,
+        actor_id=int_query("actor"),
+        actor_kind=kind,
+        q=query.get("q") or None,
+        include_ip=user.is_admin,  # guest IPs are for admins only
+    )
+    return web.json_response(out)
+
+
 @routes.get("/api/admin/apple-music")
 async def apple_status(request: web.Request) -> web.Response:
     e = enc(request)
@@ -782,7 +965,7 @@ async def apple_status(request: web.Request) -> web.Response:
 async def apple_put(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "admin")
+    user = await e.auth.require(request, "admin")
     data = await body(request)
     for key in ("developer_token", "user_token"):
         value = data.get(key)
@@ -791,6 +974,17 @@ async def apple_put(request: web.Request) -> web.Response:
     await e.update_apple_credentials(
         developer_token=data.get("developer_token"), user_token=data.get("user_token")
     )
+    # never the tokens themselves, only which were set or cleared
+    changes = {
+        key: "set" if data[key].strip() else "cleared"
+        for key in ("developer_token", "user_token")
+        if data.get(key) is not None
+    }
+    if changes:
+        await audit(
+            request, "credentials.apple_music", user,
+            target_type="credential", target_label="Apple Music", details=changes,
+        )
     return web.json_response(await e.apple_status())
 
 
@@ -808,7 +1002,7 @@ async def auto_approval_put(request: web.Request) -> web.Response:
 
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "admin")
+    user = await e.auth.require(request, "admin")
     data = await body(request)
     provider = data.get("provider", "typesafe")
     if provider not in PROVIDERS:
@@ -817,6 +1011,11 @@ async def auto_approval_put(request: web.Request) -> web.Response:
     if not isinstance(key, str) or len(key) > 1024:
         raise ApiError(400, "api_key must be a string")
     await e.update_jev_api_key(provider, key)
+    await audit(
+        request, "credentials.jev_api_key", user,
+        target_type="credential", target_id=provider, target_label=f"Jev API key ({provider})",
+        details={"provider": provider, "change": "set" if key.strip() else "cleared"},
+    )
     return web.json_response(await e.auto_approval_status())
 
 
@@ -824,12 +1023,17 @@ async def auto_approval_put(request: web.Request) -> web.Response:
 async def apple_user_token(request: web.Request) -> web.Response:
     csrf_check(request)
     e = enc(request)
-    await e.auth.require(request, "admin")
+    user = await e.auth.require(request, "admin")
     data = await body(request)
     token = data.get("music_user_token") or data.get("music-user-token")
     if not token or not isinstance(token, str) or len(token) > 8192:
         raise ApiError(400, "music_user_token is required")
     await e.update_apple_credentials(user_token=token)
+    await audit(
+        request, "credentials.apple_music", user,
+        target_type="credential", target_label="Apple Music",
+        details={"user_token": "set", "via": "Apple sign-in"},
+    )
     return web.json_response(await e.apple_status())
 
 

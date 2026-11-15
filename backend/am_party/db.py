@@ -112,6 +112,25 @@ CREATE TABLE IF NOT EXISTS speaker_owners (
     PRIMARY KEY (speaker_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_speaker_owners_user ON speaker_owners(user_id);
+
+-- Who did what (see audit.py). actor_name is a snapshot: it survives renames/deletes.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at REAL NOT NULL,
+    actor_kind TEXT NOT NULL,  -- user | guest | system | device
+    actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    actor_name TEXT,
+    guest_id TEXT,
+    ip TEXT,
+    action TEXT NOT NULL,  -- e.g. request.approve, queue.add, player.skip
+    target_type TEXT,
+    target_id TEXT,
+    target_label TEXT,
+    details TEXT  -- JSON
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id);
 """
 
 DEFAULT_SETTINGS: dict[str, Any] = {

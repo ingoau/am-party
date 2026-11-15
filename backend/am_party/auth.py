@@ -21,7 +21,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlsplit
 
 import aiohttp
@@ -30,6 +30,9 @@ from aiohttp import web
 
 from .config import Config
 from .db import Database, now
+
+if TYPE_CHECKING:
+    from .audit import AuditLog
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,6 +82,11 @@ PERMISSIONS: dict[str, dict[str, str]] = {
         "label": "Claim speakers",
         "description": "Claim speakers by scanning their QR code and control the ones you own",
         "group": "Speakers",
+    },
+    "view_audit_log": {
+        "label": "View audit log",
+        "description": "See who did what: approvals, queue changes, skips, settings and sign-ins",
+        "group": "Oversight",
     },
 }
 ADMIN = "admin"
@@ -247,10 +255,13 @@ OIDC_USER_AGENT = "am-party (+https://github.com/ingoau/am-party)"
 
 
 class AuthManager:
-    def __init__(self, config: Config, db: Database, http: aiohttp.ClientSession) -> None:
+    def __init__(
+        self, config: Config, db: Database, http: aiohttp.ClientSession, audit: AuditLog | None = None
+    ) -> None:
         self.config = config
         self.db = db
         self.http = http
+        self.audit = audit
         self._discovery: dict[str, Any] | None = None
         self._discovery_at = 0.0
         self._pending: dict[str, dict[str, Any]] = {}
@@ -433,9 +444,26 @@ class AuthManager:
                 claims.get("email") or claims.get("sub"),
             )
             email = claims.get("email")
+            if self.audit:
+                await self.audit.record(
+                    "auth.login_denied",
+                    actor_kind="guest",
+                    actor_name=(email if isinstance(email, str) else None) or str(claims.get("sub")),
+                    ip=client_ip(request, self.config.trusted_proxy),
+                    details={"reason": "not in AM_PARTY_ALLOWED_EMAILS/DOMAINS"},
+                )
             return access_denied_page(email if isinstance(email, str) else None)
 
         user = await self.upsert_user(claims)
+        if self.audit:
+            await self.audit.record(
+                "auth.login",
+                user=user,
+                ip=client_ip(request, self.config.trusted_proxy),
+                target_type="user",
+                target_id=user.id,
+                target_label=user.name or user.email,
+            )
         session_id = secrets.token_urlsafe(32)
         await self.db.execute(
             "INSERT INTO sessions(id, user_id, created_at, expires_at) VALUES(?,?,?,?)",
@@ -479,6 +507,9 @@ class AuthManager:
                 )
                 if configured_admin and not existing["is_admin"]:
                     LOGGER.info("%s is in AM_PARTY_ADMIN_EMAILS and was made admin", email)
+                    audit = ("user.update", {"admin": True, "reason": "AM_PARTY_ADMIN_EMAILS"})
+                else:
+                    audit = None
             else:
                 if self.config.admin_emails:
                     make_admin = configured_admin  # first-user rule disabled
@@ -496,9 +527,28 @@ class AuthManager:
                     "created_at, last_login) VALUES(?,?,?,?,?,?,?,?)",
                     sub, email, name, picture, int(make_admin), "[]", now(), now(),
                 )
+                reason = (
+                    ("AM_PARTY_ADMIN_EMAILS" if self.config.admin_emails else "first user")
+                    if make_admin else None
+                )
+                audit = ("user.create", {"admin": bool(make_admin), "reason": reason})
             row = await self.db.fetchone("SELECT * FROM users WHERE sub=?", sub)
         assert row
-        return User.from_row(row)
+        user = User.from_row(row)
+        if audit and self.audit:
+            created = audit[0] == "user.create"
+            await self.audit.record(
+                audit[0],
+                # a new user is the one who signed in; a promotion comes from the config
+                user=user if created else None,
+                actor_kind="user" if created else "system",
+                actor_name=None if created else "AM_PARTY_ADMIN_EMAILS",
+                target_type="user",
+                target_id=user.id,
+                target_label=user.name or user.email,
+                details=audit[1],
+            )
+        return user
 
     async def warn_if_unclaimed(self) -> None:
         """Loudly warn while the first-user-becomes-admin rule is armed."""
@@ -539,6 +589,9 @@ class AuthManager:
         return user
 
     async def logout(self, request: web.Request) -> web.Response:
+        user = await self.current_user(request)
+        if user and self.audit:
+            await self.audit.record("auth.logout", user=user, target_type="user", target_id=user.id)
         if sid := request.cookies.get(SESSION_COOKIE):
             await self.db.execute("DELETE FROM sessions WHERE id=?", sid)
         resp = web.json_response({"ok": True})

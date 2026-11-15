@@ -1,6 +1,8 @@
 import type {
   AdminStatus,
   AppleMusicStatus,
+  AuditPage,
+  AuditQuery,
   AutoApprovalStatus,
   JevProvider,
   BulkUserUpdate,
@@ -165,4 +167,12 @@ export const api = {
   autoApproval: () => request<AutoApprovalStatus>("GET", "/api/admin/auto-approval"),
   putAutoApprovalKey: (provider: JevProvider, api_key: string) =>
     request<AutoApprovalStatus>("PUT", "/api/admin/auto-approval", { provider, api_key }),
+
+  // Audit log (view_audit_log): newest first; pass next_before as `before` for the next page.
+  audit: (query: AuditQuery = {}, signal?: AbortSignal) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+    const s = qs.toString();
+    return request<AuditPage>("GET", `/api/admin/audit${s ? `?${s}` : ""}`, undefined, signal);
+  },
 };

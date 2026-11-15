@@ -136,6 +136,7 @@ const PERMISSIONS = [
   { id: "playback_skip", label: "Skip songs", description: "Skip, go back or seek within the current song for every device", group: "Playback" },
   { id: "playback_pause", label: "Pause & resume", description: "Pause and resume playback for every device", group: "Playback" },
   { id: "claim_speakers", label: "Claim speakers", description: "Claim speakers by scanning their QR code and control the ones you own", group: "Speakers" },
+  { id: "view_audit_log", label: "View audit log", description: "See who did what: approvals, queue changes, skips, settings and sign-ins", group: "Oversight" },
 ];
 const PERM_IDS = PERMISSIONS.map((p) => p.id);
 const cleanPerms = (v) => (Array.isArray(v) ? [...new Set(v.filter((p) => PERM_IDS.includes(p)))].sort() : []);
@@ -150,7 +151,7 @@ const users = [
   mkUser(2, "Alex Rivera", "alex@example.com", false, ["approve_requests"], 12, 15),
   mkUser(3, "Jo Newcomer", "jo@example.com", false, [], 0, 1),
   mkUser(4, "Priya Shah", "priya@example.com", false, DJ, 9, 40),
-  mkUser(5, "Marcus Chen", "marcus.chen@example.com", false, ["approve_requests", ...DJ], 20, 300),
+  mkUser(5, "Marcus Chen", "marcus.chen@example.com", false, ["approve_requests", ...DJ, "view_audit_log"], 20, 300),
   mkUser(6, "Lena Fischer", "lena@example.com", false, ["queue_add", "playback_skip"], 3, 90),
   mkUser(7, "Tomás Ortega", "tomas.ortega@example.com", false, [], 0, null),
   mkUser(8, "Dana Okafor", "dana@example.com", true, [], 25, 1440),
@@ -253,6 +254,109 @@ function setRequireApproval(enabled) {
 }
 const usersChanged = () => broadcast({ type: "users_changed" }, (s) => s.uid != null); // every signed-in user
 
+// ---------- Audit log (mirrors backend/am_party/audit.py) ----------
+const audit = []; // newest last; ids only grow
+let nextAuditId = 1;
+const trackRef = (t) => ({ id: t.id, title: t.title, artist: t.artist });
+const trackLabel = (t) => (t.artist ? `${t.artist} - ${t.title}` : t.title);
+const userActor = (u) => ({ kind: "user", id: u?.id ?? null, name: u?.name ?? null, guest: null });
+const guestActor = (label) => ({ kind: "guest", id: null, name: label, guest: label });
+const JEV = { kind: "system", id: null, name: "Jev (automatic review)", guest: null };
+const trackTarget = (t, type = "track", id = t.id) => ({ type, id: String(id), label: trackLabel(t) });
+const auditChanged = () => broadcast({ type: "audit_changed" }, (s) => hasPerm(sockUser(s), "view_audit_log"));
+/** Add an entry (and tell everyone who can see the log). */
+function record(action, actor, target = null, details = null, ip = "192.168.1.23", at = now()) {
+  audit.push({ id: nextAuditId++, at, action, actor, target, details, ip });
+}
+function addAudit(...args) {
+  record(...args);
+  auditChanged();
+}
+// Seed: a believable hour of party, oldest first.
+{
+  const [sam, alex, priya, lena] = [users[0], users[1], users[3], users[5]];
+  const T = (i) => TRACKS[i];
+  const ago = (min) => now() - min * 60;
+  const seed = [
+    [181, "user.create", userActor(sam), { type: "user", id: "1", label: "Sam Host" }, { admin: true, reason: "first user" }],
+    [180, "auth.login", userActor(sam), { type: "user", id: "1", label: "Sam Host" }, null],
+    [178, "settings.update", userActor(sam), { type: "setting", id: null, label: "party_name" }, { changes: { party_name: { from: "Party", to: "Sam's Birthday Bash" } } }],
+    [176, "settings.update", userActor(sam), { type: "setting", id: null, label: "crossfade_duration, request_rate_limits" }, { changes: { crossfade_duration: { from: 8, to: 6 }, request_rate_limits: { from: [{ requests: 5, seconds: 600 }], to: [{ requests: 10, seconds: 600 }] } } }],
+    [175, "credentials.jev_api_key", userActor(sam), { type: "credential", id: "typesafe", label: "Jev API key (typesafe)" }, { provider: "typesafe", change: "set" }],
+    [170, "user.create", userActor(alex), { type: "user", id: "2", label: "Alex Rivera" }, { admin: false, reason: null }],
+    [168, "user.update", userActor(sam), { type: "user", id: "2", label: "Alex Rivera" }, { granted: ["approve_requests", "playback_skip"] }],
+    [167, "user.update", userActor(sam), { type: "user", id: "4", label: "Priya Shah" }, { granted: ["queue_add", "queue_remove", "queue_reorder", "playback_pause", "playback_skip"] }],
+    [160, "speaker.claim", userActor(sam), { type: "speaker", id: "spk-living", label: "Living room" }, null],
+    [158, "speaker.rename", { kind: "device", id: null, name: "Speaker Kitchen", guest: null }, { type: "speaker", id: "spk-kitchen", label: "Kitchen bench" }, { from: "Kitchen", to: "Kitchen bench", by: "speaker page" }],
+    [150, "request.create", guestActor("Guest 7F3A"), trackTarget(T(2), "request", 9001), { track: trackRef(T(2)), status: "pending", auto_review: true, speaker_id: null }],
+    [149, "request.auto_flag", JEV, trackTarget(T(2), "request", 9001), { track: trackRef(T(2)), decision: "reject", probability: 0.64, threshold: 0.9, note: null }],
+    [140, "request.reject", userActor(alex), trackTarget(T(2), "request", 9001), { track: trackRef(T(2)), position: null, guest: "Guest 7F3A", auto: { status: "flagged", decision: "reject", probability: 0.64 } }],
+    [120, "request.create", guestActor("Guest 44B0"), trackTarget(T(15), "request", 9002), { track: trackRef(T(15)), status: "pending", auto_review: true, speaker_id: null }],
+    [119.5, "request.auto_approve", JEV, trackTarget(T(15), "request", 9002), { track: trackRef(T(15)), decision: "approve", probability: 0.99, threshold: 0.9, note: null }],
+    [110, "request.create", guestActor("Guest 0B12"), trackTarget(T(1), "request", 9003), { track: trackRef(T(1)), status: "pending", auto_review: true, speaker_id: "spk-living" }],
+    [109.8, "request.auto_error", JEV, trackTarget(T(1), "request", 9003), { track: trackRef(T(1)), error: "Jev timed out" }],
+    [100, "request.recheck", userActor(alex), trackTarget(T(1), "request", 9003), null],
+    [99.5, "request.auto_reject", JEV, trackTarget(T(1), "request", 9003), { track: trackRef(T(1)), decision: "reject", probability: 0.08, threshold: 0.9, note: "No lyrics found" }],
+    [90, "queue.add", userActor(priya), trackTarget(T(10)), { track: trackRef(T(10)), position: "end" }],
+    [80, "queue.add", userActor(sam), trackTarget(T(9)), { track: trackRef(T(9)), position: "next" }],
+    [79, "player.skip", userActor(alex), trackTarget(T(4)), { track: trackRef(T(4)), source: "fallback", at: 13.2, next: { ...trackRef(T(9)), source: "admin" } }],
+    [70, "queue.move", userActor(priya), trackTarget(T(10)), { track: trackRef(T(10)), from: 3, to: 0 }],
+    [65, "player.pause", userActor(priya), trackTarget(T(9)), { track: trackRef(T(9)), source: "admin" }],
+    [64, "player.resume", userActor(priya), trackTarget(T(9)), { track: trackRef(T(9)), source: "admin" }],
+    [60, "player.seek", userActor(lena), trackTarget(T(9)), { track: trackRef(T(9)), source: "admin", from: 62.4, to: 150 }],
+    [55, "queue.remove", userActor(priya), trackTarget(T(13)), { track: trackRef(T(13)), index: 2, source: "request", request_id: 9004 }],
+    [50, "request.approve_all", userActor(alex), { type: "request", id: null, label: "2 requests" }, { count: 2, position: "end", requests: [{ id: 9005, track: trackLabel(T(5)) }, { id: 9006, track: trackLabel(T(14)) }], reason: null }],
+    [45, "speaker.share", userActor(sam), { type: "speaker", id: "spk-living", label: "Living room" }, { mode: "share", expires_at: now() - 45 * 60 + 600 }],
+    [44, "speaker.share_accept", userActor(lena), { type: "speaker", id: "spk-living", label: "Living room" }, { mode: "share", from: "Sam Host", from_user_id: 1 }],
+    [42, "user.delete", userActor(sam), { type: "user", id: "9", label: "Old Account" }, { was_admin: false, permissions: ["approve_requests", "queue_add"], speakers: [] }],
+    [40, "speaker.control", userActor(sam), { type: "speaker", id: "spk-living,spk-kitchen", label: "Living room, Kitchen bench" }, { volume: 70 }],
+    [30, "settings.require_approval", userActor(sam), { type: "setting", id: "require_approval", label: "Require approval on" }, { enabled: true, approved_waiting: 0 }],
+    [25, "auth.login_denied", { kind: "guest", id: null, name: "stranger@example.net", guest: null }, null, { reason: "not in AM_PARTY_ALLOWED_EMAILS/DOMAINS" }],
+    [14.4, "request.approve", userActor(alex), trackTarget(T(5), "request", 9007), { track: trackRef(T(5)), position: "next", guest: "Guest 7F3A", auto: null }],
+    [14.2, "request.create", guestActor("Guest 7F3A"), trackTarget(T(6), "request", 9008), { track: trackRef(T(6)), status: "pending", auto_review: false, speaker_id: null }],
+    [6, "player.previous", userActor(lena), trackTarget(T(3)), { track: trackRef(T(3)), from: trackRef(T(0)), at: 2.1 }],
+    [3, "mock.unknown_thing", userActor(sam), { type: "thing", id: "42", label: "Something new" }, { foo: "bar", nested: { a: 1 } }],
+  ];
+  for (const [min, action, actor, target, details] of seed) record(action, actor, target, details, actor.kind === "system" ? null : "192.168.1.23", ago(min));
+  // Lots of older guest requests so paging has something to page through.
+  for (let i = 0; i < 140; i++) {
+    const t = T(i % TRACKS.length);
+    const g = `Guest ${(0x1a2b + i * 37).toString(16).toUpperCase().slice(-4)}`;
+    record("request.create", guestActor(g), trackTarget(t, "request", 8000 + i), { track: trackRef(t), status: "pending", auto_review: false, speaker_id: null }, `10.0.0.${i % 250}`, ago(400 + i * 3));
+  }
+  audit.sort((a, b) => a.at - b.at).forEach((e, i) => (e.id = i + 1));
+  nextAuditId = audit.length + 1;
+}
+/** GET /api/admin/audit: newest first, keyset paging on id. */
+function auditQuery(sp, admin) {
+  const before = Number(sp.get("before")) || Infinity;
+  const limit = Math.max(1, Math.min(200, Number(sp.get("limit")) || 100));
+  const action = sp.get("action") || "";
+  const actor = Number(sp.get("actor")) || null;
+  const kind = sp.get("actor_kind") || "";
+  const q = (sp.get("q") || "").toLowerCase();
+  const out = [];
+  for (let i = audit.length - 1; i >= 0 && out.length <= limit; i--) {
+    const e = audit[i];
+    if (e.id >= before) continue;
+    if (action && !(action.endsWith(".") ? e.action.startsWith(action) : e.action === action)) continue;
+    if (actor && e.actor.id !== actor) continue;
+    if (kind && e.actor.kind !== kind) continue;
+    // Like the backend: target label, actor name (guests: their label), action and the details JSON.
+    if (q && ![e.target?.label, e.actor.name, e.action, e.details && JSON.stringify(e.details)].some((x) => x && x.toLowerCase().includes(q))) continue;
+    out.push(e);
+  }
+  const more = out.length > limit;
+  const entries = out.slice(0, limit).map(({ ip, ...e }) => {
+    if (admin) return { ...e, ip };
+    // Non-admins only see the domain of a refused sign-in's email.
+    if (e.action === "auth.login_denied" && e.actor.name?.includes("@"))
+      return { ...e, actor: { ...e.actor, name: `…@${e.actor.name.split("@").pop()}` } };
+    return e;
+  });
+  return { entries, next_before: more ? entries[entries.length - 1].id : null };
+}
+
 /** Mirrors the backend's _apply_user_changes. Returns [status, error] on failure. */
 function applyUserChanges(ids, isAdmin, set, add, remove) {
   const targets = ids.map((id) => users.find((u) => u.id === id));
@@ -310,6 +414,7 @@ const server = http.createServer(async (req, res) => {
   const user = currentUser(req);
   const guest = cookies(req).guest || crypto.randomBytes(4).toString("hex");
   const guestCookie = { "Set-Cookie": `guest=${guest}; Path=/; HttpOnly; SameSite=Lax` };
+  const ip = (req.socket.remoteAddress || "").replace(/^::ffff:/, "") || null;
   const need = (perm) => {
     if (!user) return err(res, 401, "Not signed in"), false;
     if (!hasPerm(user, perm)) return err(res, 403, "Forbidden"), false;
@@ -365,6 +470,7 @@ const server = http.createServer(async (req, res) => {
       broadcastState();
     }
     requestsChanged();
+    addAudit("request.create", guestActor(r.guest_label), trackTarget(t, "request", r.id), { track: trackRef(t), status: r.status, auto_review: false, speaker_id: null }, ip);
     return json(res, 201, { request: strip(r, false) }, guestCookie);
   }
   if (p === "/api/requests/mine") return json(res, 200, { requests: requests.filter((r) => r.guest === guest).map(mineView) }, guestCookie);
@@ -377,9 +483,11 @@ const server = http.createServer(async (req, res) => {
       upcoming.splice(i, 1);
       broadcastState();
     } else if (r.status !== "pending") return err(res, 409, "Can't withdraw that request");
+    const was = r.status;
     r.status = "withdrawn";
     r.decided_at = now();
     requestsChanged();
+    addAudit("request.withdraw", guestActor(r.guest_label), trackTarget(r.track, "request", r.id), { track: trackRef(r.track), was }, ip);
     return json(res, 200, { ok: true }, guestCookie);
   }
   if (p === "/mock/guest") {
@@ -398,10 +506,14 @@ const server = http.createServer(async (req, res) => {
   if (p === "/api/admin/requests/approve-all" && req.method === "POST") {
     if (!need("approve_requests")) return;
     const body = await readBody(req);
-    const n = approveAllPending(user.name, body.position === "next" ? "next" : "end");
+    const position = body.position === "next" ? "next" : "end";
+    const waiting = requests.filter((r) => r.status === "pending");
+    const n = approveAllPending(user.name, position);
     if (n) {
       broadcastState();
       requestsChanged();
+      addAudit("request.approve_all", userActor(user), { type: "request", id: null, label: `${n} request${n === 1 ? "" : "s"}` },
+        { count: n, position, requests: waiting.slice(0, 50).map((r) => ({ id: r.id, track: trackLabel(r.track) })), ...(waiting.length > 50 ? { requests_more: waiting.length - 50 } : {}), reason: null }, ip);
     }
     return json(res, 200, { ok: true, approved: n });
   }
@@ -411,6 +523,8 @@ const server = http.createServer(async (req, res) => {
     const approved = setRequireApproval(body.enabled);
     broadcastState();
     requestsChanged();
+    addAudit("settings.require_approval", userActor(user), { type: "setting", id: "require_approval", label: `Require approval ${settings.require_approval ? "on" : "off"}` },
+      { enabled: settings.require_approval, approved_waiting: approved }, ip);
     return json(res, 200, { ok: true, require_approval: settings.require_approval, approved });
   }
   if ((m = p.match(/^\/api\/admin\/requests\/(\d+)\/recheck$/)) && req.method === "POST") {
@@ -433,8 +547,9 @@ const server = http.createServer(async (req, res) => {
     if (!r) return err(res, 404, "Not found");
     if (r.status !== "pending") return err(res, 409, "Already decided");
     const body = await readBody(req);
+    const position = body.position === "next" ? "next" : "end";
     if (m[2] === "approve") {
-      approveRequest(r, user.name, body.position === "next" ? "next" : "end");
+      approveRequest(r, user.name, position);
       broadcastState();
     } else {
       r.status = "rejected";
@@ -442,6 +557,8 @@ const server = http.createServer(async (req, res) => {
       r.decided_by = user.name;
     }
     requestsChanged();
+    addAudit(`request.${m[2]}`, userActor(user), trackTarget(r.track, "request", r.id),
+      { track: trackRef(r.track), position: m[2] === "approve" ? position : null, guest: r.guest_label, auto: r.auto ?? null }, ip);
     return json(res, 200, { request: strip(r, true) });
   }
 
@@ -454,12 +571,18 @@ const server = http.createServer(async (req, res) => {
     const item = { id: nextId++, track: t, source: "admin", request_id: null };
     position === "next" ? upcoming.unshift(item) : upcoming.push(item);
     broadcastState();
+    addAudit("queue.add", userActor(user), trackTarget(t), { track: trackRef(t), position: position === "next" ? "next" : "end" }, ip);
     return json(res, 201, { ok: true });
   }
   if ((m = p.match(/^\/api\/admin\/queue\/(\d+)$/)) && req.method === "DELETE") {
     if (!need("queue_remove")) return;
+    const index = upcoming.findIndex((u) => u.id === Number(m[1]));
+    const item = upcoming[index];
     upcoming = upcoming.filter((u) => u.id !== Number(m[1]));
     broadcastState();
+    if (item)
+      addAudit("queue.remove", userActor(user), trackTarget(item.track),
+        { track: trackRef(item.track), index, source: item.source, request_id: item.request_id }, ip);
     return json(res, 200, {});
   }
   if ((m = p.match(/^\/api\/admin\/queue\/(\d+)\/move$/)) && req.method === "POST") {
@@ -471,33 +594,59 @@ const server = http.createServer(async (req, res) => {
     if (i === 0 && mixingIn())
       return err(res, 409, "That track is already being mixed in");
     const [it] = upcoming.splice(i, 1);
-    upcoming.splice(Math.max(0, Math.min(upcoming.length, index)), 0, it);
+    const to = Math.max(0, Math.min(upcoming.length, index));
+    upcoming.splice(to, 0, it);
     broadcastState();
+    if (to !== i) addAudit("queue.move", userActor(user), trackTarget(it.track), { track: trackRef(it.track), from: i, to }, ip);
     return json(res, 200, {});
   }
   if ((m = p.match(/^\/api\/admin\/player\/(skip|pause|resume|previous|seek)$/)) && req.method === "POST") {
     if (!need(["skip", "previous", "seek"].includes(m[1]) ? "playback_skip" : "playback_pause")) return;
     const pos = () => (paused ? pausedAt : now()) - nowPlaying.started_at;
-    if (m[1] === "skip") { paused = false; advance(); }
+    const before = nowPlaying;
+    const extra = {};
+    if (m[1] === "skip") {
+      if (nowPlaying) extra.at = Math.round(pos() * 10) / 10;
+      const next = upcoming[0];
+      extra.next = next ? { ...trackRef(next.track), source: next.source } : { ...trackRef(TRACKS[fallbackIdx % TRACKS.length]), source: "fallback" };
+      paused = false;
+      advance();
+    }
     else if (m[1] === "previous") {
       const body = await readBody(req);
       if (!nowPlaying) return err(res, 409, "Nothing is playing");
       if (body.track_id != null && body.track_id !== nowPlaying.track.id) return err(res, 409, "The song changed. Try again.");
-      if ((typeof body.at === "number" ? body.at : pos()) > 3 || !played.length) nowPlaying.started_at = (paused ? pausedAt : now());
-      else {
+      const at = Math.round((typeof body.at === "number" ? body.at : pos()) * 10) / 10;
+      if (at > 3 || !played.length) {
+        nowPlaying.started_at = (paused ? pausedAt : now());
+        addAudit("player.restart", userActor(user), trackTarget(nowPlaying.track), { track: trackRef(nowPlaying.track), at }, ip);
+      } else {
         upcoming.unshift({ id: nextId++, track: nowPlaying.track, source: nowPlaying.source, request_id: null });
         nowPlaying = { ...played.pop(), started_at: paused ? pausedAt : now() };
+        addAudit("player.previous", userActor(user), trackTarget(nowPlaying.track), { track: trackRef(nowPlaying.track), from: trackRef(before.track), at }, ip);
       }
     } else if (m[1] === "seek") {
       const body = await readBody(req);
       if (!nowPlaying) return err(res, 409, "Nothing is playing");
       const to = Math.max(0, Math.min(Number(body.position) || 0, nowPlaying.track.duration - 1));
+      extra.from = Math.round(pos() * 10) / 10;
+      extra.to = Math.round(to * 10) / 10;
       nowPlaying.started_at = (paused ? pausedAt : now()) - to;
     }
     else if (m[1] === "pause" && !paused) { paused = true; pausedAt = now(); }
     else if (m[1] === "resume" && paused) { paused = false; nowPlaying.started_at += now() - pausedAt; }
     broadcastState();
+    if (m[1] !== "previous") {
+      const t = before?.track;
+      addAudit(`player.${m[1]}`, userActor(user), t ? trackTarget(t) : null, { ...(t ? { track: trackRef(t), source: before.source } : {}), ...extra }, ip);
+    }
     return json(res, 200, {});
+  }
+
+  // Audit log
+  if (p === "/api/admin/audit") {
+    if (!need("view_audit_log")) return;
+    return json(res, 200, auditQuery(url.searchParams, user.is_admin));
   }
 
   // Admin
@@ -541,6 +690,7 @@ const server = http.createServer(async (req, res) => {
     if (!need("admin")) return;
     if (req.method === "PATCH") {
       const { require_approval, ...rest } = await readBody(req);
+      const old = structuredClone(settings);
       Object.assign(settings, rest);
       if (Array.isArray(rest.request_rate_limits)) {
         // Like the backend: shortest period first, duplicates dropped.
@@ -554,6 +704,11 @@ const server = http.createServer(async (req, res) => {
         requestsChanged();
       }
       broadcastState();
+      const changes = {};
+      for (const k of Object.keys(settings))
+        if (JSON.stringify(old[k]) !== JSON.stringify(settings[k])) changes[k] = { from: old[k], to: settings[k] };
+      if (Object.keys(changes).length)
+        addAudit("settings.update", userActor(user), { type: "setting", id: null, label: Object.keys(changes).sort().join(", ") }, { changes }, ip);
     }
     return json(res, 200, settings);
   }
