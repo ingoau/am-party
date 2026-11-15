@@ -18,7 +18,7 @@ from aiohttp import WSMsgType, web
 from .audit import ACTOR_KINDS, track_label, track_ref
 from .auth import SESSION_COOKIE, client_ip, guest_id, set_guest_cookie
 from .party import ApiError
-from .security import valid_track_id
+from .security import SlidingWindow, valid_track_id
 
 if TYPE_CHECKING:
     from .app import AmParty
@@ -214,6 +214,9 @@ def speaker_targets(speakers: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# Speaker pages rename without signing in: cap the audit entries one speaker can cause.
+RENAME_AUDIT: SlidingWindow[str] = SlidingWindow(5, 60, 10_000)
+
 WS_MAX_MSG = 4096
 WS_PING_INTERVAL = 0.5  # pings faster than 2/s are ignored
 
@@ -295,7 +298,7 @@ async def withdraw_request(request: web.Request) -> web.Response:
     gid, new = guest(request)
     if new:
         raise ApiError(404, "Request not found")
-    await enc(request).party.withdraw_request(gid, int_param(request, "id"))
+    await enc(request).party.withdraw_request(gid, int_param(request, "id"), ip=ip_of(request))
     return web.json_response({"ok": True})
 
 
@@ -464,6 +467,7 @@ async def player_action(request: web.Request) -> web.Response:
     perm = "playback_skip" if action in ("skip", "previous", "seek") else "playback_pause"
     user = await e.auth.require(request, perm)
     now_playing = e.engine.now.candidate if e.engine.now else None
+    was_paused = e.engine.paused
     audit: dict[str, Any] = {}
     if action == "skip":
         # what plays instead: the track already being mixed in, else the party's next pick
@@ -491,7 +495,8 @@ async def player_action(request: web.Request) -> web.Response:
         before = e.engine.position() if e.engine.now else None
         if not e.engine.seek(float(pos)):
             raise ApiError(409, "Nothing is playing")
-        audit = {"from": None if before is None else round(before, 1), "to": round(float(pos), 1)}
+        # engine.seek clamps to the song: record where it actually went
+        audit = {"from": None if before is None else round(before, 1), "to": round(e.engine.position(), 1)}
     elif action == "pause":
         await e.engine.pause()
     elif action == "resume":
@@ -500,6 +505,13 @@ async def player_action(request: web.Request) -> web.Response:
         raise ApiError(404, "Unknown action")
     e.party.changed()
     track = now_playing.track if now_playing else None
+    noop = (
+        (action == "skip" and now_playing is None)
+        or (action == "pause" and was_paused)
+        or (action == "resume" and not was_paused)
+    )
+    if noop:
+        return web.json_response({"ok": True})
     await e.party.audit.record(
         f"player.{action}",
         user=user,
@@ -531,6 +543,8 @@ async def speaker_self_name(request: web.Request) -> web.Response:
     e = enc(request)
     before = await e.speakers.device_view(data.get("client_id"))
     view = await e.speakers.device_rename(data.get("client_id"), data.get("name"))
+    if view.get("name") == before.get("name") or not RENAME_AUDIT.check_and_hit(view["id"]):
+        return web.json_response(view)
     await e.party.audit.record(
         "speaker.rename",
         actor_kind="device",
@@ -721,6 +735,7 @@ async def _apply_user_changes(
     from .auth import User, clean_permissions
 
     changed: list[dict[str, Any]] = []
+    uids = list(dict.fromkeys(uids))  # [5, 5] is one user
     # one transaction so the last-admin check and the writes can't interleave
     # with another request's changes
     async with e.db.transaction():
@@ -844,7 +859,6 @@ async def delete_user(request: web.Request) -> web.Response:
         request, "user.delete", me_user,
         target_type="user", target_id=uid, target_label=row["name"] or row["email"],
         details={
-            "email": row["email"],
             "was_admin": bool(row["is_admin"]),
             "permissions": json.loads(row["permissions"] or "[]"),
             "speakers": [r["speaker_id"] for r in owned],
@@ -915,9 +929,12 @@ async def audit_log(request: web.Request) -> web.Response:
         if raw in (None, ""):
             return None
         try:
-            return int(raw)
+            value = int(raw)
         except ValueError as err:
             raise ApiError(400, f"Invalid {name}") from err
+        if not 0 <= value < 2**63:  # sqlite integers are 64-bit
+            raise ApiError(400, f"Invalid {name}")
+        return value
 
     kind = query.get("actor_kind") or None
     if kind is not None and kind not in ACTOR_KINDS:
@@ -959,7 +976,7 @@ async def apple_put(request: web.Request) -> web.Response:
     )
     # never the tokens themselves, only which were set or cleared
     changes = {
-        key: "set" if data[key] else "cleared"
+        key: "set" if data[key].strip() else "cleared"
         for key in ("developer_token", "user_token")
         if data.get(key) is not None
     }

@@ -660,7 +660,7 @@ class Party:
         locked = self._locked_id()
         return any(q["id"] == locked and q.get("request_id") == request_id for q in self.queue)
 
-    async def withdraw_request(self, guest_id: str, rid: int) -> None:
+    async def withdraw_request(self, guest_id: str, rid: int, ip: str | None = None) -> None:
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=? AND guest_id=?", rid, guest_id)
         if not row:
             raise ApiError(404, "Request not found")
@@ -689,6 +689,7 @@ class Party:
         await self.audit.record(
             "request.withdraw",
             guest_id=guest_id,
+            ip=ip,
             target_type="request",
             target_id=rid,
             target_label=track_label(track),
@@ -753,7 +754,9 @@ class Party:
         """Turn approval on/off. Turning it off approves everything waiting."""
         was = self._settings.get("require_approval", True)
         self._settings = await self.db.set_settings({"require_approval": bool(enabled)})
-        approved = 0 if enabled else await self.approve_all(user, reason="approval switched off")
+        approved = 0
+        if not enabled:
+            approved = await self.approve_all(user, reason="approval switched off" if was else None)
         if bool(was) != bool(enabled):
             await self.audit.record(
                 "settings.require_approval",
@@ -850,13 +853,13 @@ class Party:
             )
         except ReviewError as err:
             LOGGER.warning("Automatic review of request %s failed: %s", rid, err)
-            await self._set_review(rid, "error", None, None, str(err)[:300])
-            await self._audit_review(rid, track, "request.auto_error", {"error": str(err)[:300]})
+            if await self._set_review(rid, "error", None, None, str(err)[:300]):
+                await self._audit_review(rid, track, "request.auto_error", {"error": str(err)[:300]})
             return
         except Exception as err:  # never leave a request stuck on "checking"
             LOGGER.exception("Automatic review of request %s crashed", rid)
-            await self._set_review(rid, "error", None, None, f"Review failed: {type(err).__name__}")
-            await self._audit_review(rid, track, "request.auto_error", {"error": type(err).__name__})
+            if await self._set_review(rid, "error", None, None, f"Review failed: {type(err).__name__}"):
+                await self._audit_review(rid, track, "request.auto_error", {"error": type(err).__name__})
             return
         note = None if verdict.lyrics_found else "No lyrics found"
         threshold = float(self._settings.get("auto_approval_threshold", 90)) / 100
@@ -870,8 +873,8 @@ class Party:
             "provider": str(s.get("auto_approval_provider") or "typesafe"),
         }
         if verdict.probability < threshold or not self.auto_review_enabled():
-            await self._set_review(rid, "flagged", verdict.decision, verdict.probability, note)
-            await self._audit_review(rid, track, "request.auto_flag", verdict_details)
+            if await self._set_review(rid, "flagged", verdict.decision, verdict.probability, note):
+                await self._audit_review(rid, track, "request.auto_flag", verdict_details)
             return
         approve = verdict.decision == "approve"
         status = "approved" if approve else "rejected"
@@ -915,8 +918,9 @@ class Party:
 
     async def _set_review(
         self, rid: int, status: str, decision: str | None, probability: float | None, note: str | None
-    ) -> None:
-        await self.db.execute(
+    ) -> bool:
+        """Store the review outcome; False if the request was decided meanwhile."""
+        return bool(await self.db.execute_rowcount(
             "UPDATE requests SET auto_status=?, auto_decision=?, auto_probability=?, auto_note=? "
             "WHERE id=? AND status='pending'",
             status,
@@ -924,7 +928,7 @@ class Party:
             probability,
             note,
             rid,
-        )
+        ))
 
     async def decide_request(self, rid: int, user: User, approve: bool, position: str = "end") -> dict[str, Any]:
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)

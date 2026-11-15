@@ -188,6 +188,7 @@ class AmParty:
             await self.analysis_worker.stop()
         for ws in list(self.hub.clients):
             await ws.close()
+        await self.audit.close()
         await self.http.close()
         await self.db.close()
 

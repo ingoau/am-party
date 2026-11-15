@@ -531,15 +531,18 @@ class AuthManager:
                     ("AM_PARTY_ADMIN_EMAILS" if self.config.admin_emails else "first user")
                     if make_admin else None
                 )
-                audit = ("user.create", {"email": email, "admin": bool(make_admin), "reason": reason})
+                audit = ("user.create", {"admin": bool(make_admin), "reason": reason})
             row = await self.db.fetchone("SELECT * FROM users WHERE sub=?", sub)
         assert row
         user = User.from_row(row)
         if audit and self.audit:
+            created = audit[0] == "user.create"
             await self.audit.record(
                 audit[0],
-                actor_kind="system",
-                actor_name="Sign-in",
+                # a new user is the one who signed in; a promotion comes from the config
+                user=user if created else None,
+                actor_kind="user" if created else "system",
+                actor_name=None if created else "AM_PARTY_ADMIN_EMAILS",
                 target_type="user",
                 target_id=user.id,
                 target_label=user.name or user.email,

@@ -169,3 +169,34 @@ async def test_actor_name_survives_user_deletion(tmp_path: Path) -> None:
     await p.db.execute("DELETE FROM users WHERE id=2")
     (entry,) = await entries(p)
     assert entry["actor"]["id"] is None and entry["actor"]["name"] == "Alex"
+
+
+def test_large_details_keep_their_scalars() -> None:
+    import json
+
+    from am_party.audit import MAX_DETAILS, MAX_LIST, _details_json
+
+    reqs = [{"id": i, "track": f"Artist {i} - " + "x" * 80} for i in range(150)]
+    out = json.loads(_details_json({"count": 150, "position": "next", "requests": reqs}))
+    assert out["count"] == 150 and out["position"] == "next"
+    assert len(out["requests"]) == MAX_LIST and out["requests_more"] == 150 - MAX_LIST
+    # long strings are cut, and something still huge falls back to its scalars
+    out = json.loads(_details_json({"count": 1, "blob": {"a": "y" * 50_000, "b": "z" * 50_000}}))
+    assert out == {"count": 1, "truncated": True} or len(json.dumps(out)) <= MAX_DETAILS
+
+
+@pytest.mark.asyncio
+async def test_emails_are_for_admins_only(tmp_path: Path) -> None:
+    db = Database(tmp_path / "e.db")
+    await db.open()
+    audit = AuditLog(db)
+    await audit.record("auth.login_denied", actor_kind="guest", actor_name="eve@evil.example",
+                       details={"reason": "x"})
+    await audit.record("user.delete", actor_kind="system", details={"email": "bo@x", "was_admin": False})
+    staff_view = (await audit.list())["entries"]
+    assert staff_view[1]["actor"]["name"] == "…@evil.example"
+    assert staff_view[0]["details"] == {"was_admin": False}
+    admin_view = (await audit.list(include_ip=True))["entries"]
+    assert admin_view[1]["actor"]["name"] == "eve@evil.example"
+    assert admin_view[0]["details"]["email"] == "bo@x"
+    await db.close()
