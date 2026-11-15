@@ -14,6 +14,7 @@ import aiohttp
 from aiohttp import web
 
 from . import api
+from .audit import AuditLog
 from .auth import AuthManager
 from .autoapprove import DEFAULT_MODEL, DEFAULT_PROMPT, PROVIDERS as JEV_PROVIDERS, AutoReviewer
 from .config import Config
@@ -38,6 +39,7 @@ class AmParty:
         self.config = config
         self.db = Database(config.data_dir / "am_party.db")
         self.hub = Hub()
+        self.audit = AuditLog(self.db, self.hub)
         self.http: aiohttp.ClientSession
         self.auth: AuthManager
         self.apple: Any
@@ -56,7 +58,7 @@ class AmParty:
     async def start(self) -> None:
         await self.db.open()
         self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
-        self.auth = AuthManager(self.config, self.db, self.http)
+        self.auth = AuthManager(self.config, self.db, self.http, self.audit)
         await self.auth.warn_if_unclaimed()
 
         from .providers.apple_music import AppleMusicClient
@@ -69,7 +71,7 @@ class AmParty:
             widevine_private_key=_read_bytes(self.config.widevine_private_key_path),
             logger=logging.getLogger("am_party.apple_music"),
         )
-        self.party = Party(self.db, self.apple, self.hub)
+        self.party = Party(self.db, self.apple, self.hub, self.audit)
         self.party.public_url = self.config.public_url
         self.party.set_rate_limits(self.config.ip_search_per_min, self.config.ip_max_pending)
         await self.party.load()
@@ -197,6 +199,7 @@ class AmParty:
                     "DELETE FROM requests WHERE status != 'pending' AND created_at < ?",
                     now() - 30 * 86400,
                 )
+                await self.audit.prune()
             except Exception:  # noqa: BLE001 - keep the loop alive
                 LOGGER.exception("Housekeeping failed")
             await asyncio.sleep(3600)

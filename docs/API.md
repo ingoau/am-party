@@ -65,7 +65,7 @@ type Request = {
 };
 
 type Permission = "approve_requests" | "queue_add" | "queue_reorder" | "queue_remove"
-                | "playback_skip" | "playback_pause" | "claim_speakers";
+                | "playback_skip" | "playback_pause" | "claim_speakers" | "view_audit_log";
 
 type User = {
   id: number; email: string | null; name: string; picture: string | null;
@@ -81,7 +81,7 @@ type User = {
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/state` | `State` |
-| GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in users with `approve_requests` also get `{"type":"requests_changed"}`; all signed-in users get `{"type":"users_changed"}` (refetch `/api/me`, admins also the user list). Users with `claim_speakers` get `{"type":"speakers_changed"}` (refetch `/api/speakers`); everyone gets `{"type":"speaker_changed","id"}` when that speaker's name, lock, claim or claim code changes (the speaker refetches `/api/speaker/self`). Client may send `{"type":"ping"}`. |
+| GET | `/api/ws` | WebSocket. Server sends `{"type":"state","data":State}` on connect and on every change. Signed-in users with `approve_requests` also get `{"type":"requests_changed"}`; all signed-in users get `{"type":"users_changed"}` (refetch `/api/me`, admins also the user list). Users with `view_audit_log` get `{"type":"audit_changed"}` when an entry is added. Users with `claim_speakers` get `{"type":"speakers_changed"}` (refetch `/api/speakers`); everyone gets `{"type":"speaker_changed","id"}` when that speaker's name, lock, claim or claim code changes (the speaker refetches `/api/speaker/self`). Client may send `{"type":"ping"}`. |
 | GET | `/api/search?q=...` | `{tracks: Track[]}`. Rate limited per guest. 503 if Apple Music not configured. |
 | POST | `/api/requests` | body `{track_id, speaker?}`: `track_id` must come from a recent search; `speaker` is the claim token from `/?speaker=` when the guest arrived via a speaker's QR (unknown tokens are ignored, never an error). `201 {request: Request}`. 429 with `{error}` when rate limited or too many pending; 409 if already queued/pending; 403 if requests closed. Sets anonymous guest cookie. |
 | DELETE | `/api/requests/{id}` | guest withdraws their own request (pending, or approved and still queued but not yet being mixed in); 409 otherwise |
@@ -198,6 +198,46 @@ type SpeakerSelf = {
 | POST | `/api/speakers/share` | `{ids, mode: "share" \| "handover"}` → `{token, expires_at, mode}`; single use, 10 minutes. Link: `${public_url}/admin/speakers?share=${token}` |
 | GET | `/api/speakers/share/{token}` | `{mode, from, expires_at, speakers: {id, name, connected}[]}`; only the speakers the sharer still controls (410 if none) |
 | POST | `/api/speakers/share/{token}/accept` | → `{speakers}`; adds you as a co-owner, and for `handover` removes the sharer |
+
+### `view_audit_log`
+
+Every state-changing action is recorded: guest requests and withdrawals, approvals and
+rejections (by people and by Jev), approve-all, queue adds/removes/moves, skip / previous /
+restart / seek / pause / resume, settings, user and permission changes, speaker changes,
+credential changes (never the secret itself, only set/cleared) and sign-ins. Entries are
+kept for 365 days.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/admin/audit` | `?before=<id>&limit=<1-200, default 100>&action=<name, or prefix ending in ".">&actor=<user id>&actor_kind=<user\|guest\|system\|device>&q=<text>` → `{entries: AuditEntry[], next_before: number \| null}`, newest first; pass `next_before` as `before` for the next page |
+
+```ts
+type AuditEntry = {
+  id: number;
+  at: number;                   // unix seconds
+  action: string;               // e.g. "request.approve", "queue.add", "player.skip", "settings.update"
+  actor: {
+    kind: "user" | "guest" | "system" | "device";
+    id: number | null;          // user id (null once the user is deleted)
+    name: string | null;        // snapshot at the time; "Jev (automatic review)" for Jev
+    guest: string | null;       // "Guest 1A2B", same label as in the requests list
+  };
+  target: { type: string | null; id: string | null; label: string | null } | null;
+  details: Record<string, unknown> | null; // action-specific, e.g. {track, position}, {changes}
+  ip?: string | null;           // admins only
+};
+```
+
+Actions: `request.create`, `request.withdraw`, `request.approve`, `request.reject`,
+`request.approve_all`, `request.recheck`, `request.auto_approve`, `request.auto_reject`,
+`request.auto_flag`, `request.auto_error`, `queue.add`, `queue.remove`, `queue.move`,
+`player.skip` (details: `at`, `next`), `player.previous`, `player.restart`, `player.seek`,
+`player.pause`, `player.resume`, `settings.update` (details: `changes: {key: {from, to}}`),
+`settings.require_approval`, `user.create`, `user.update` (`granted`, `revoked`, `admin`),
+`user.delete`, `speaker.claim`, `speaker.control`, `speaker.update`, `speaker.rename` (from the
+speaker page), `speaker.share`, `speaker.share_accept`, `speaker.assign`,
+`speaker.remove_owner`, `speaker.forget`, `credentials.apple_music`,
+`credentials.jev_api_key`, `auth.login`, `auth.logout`, `auth.login_denied`.
 
 ### `admin`
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import math
@@ -15,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from .audit import AuditLog, guest_label, settings_diff, track_label, track_ref
 from .autoapprove import DEFAULT_MODEL, PROVIDERS, AutoReviewer, ReviewError
 from .db import Database, now
 from .models import NotConfigured, ProviderError, Track
@@ -99,7 +99,7 @@ def _allowed(user: User | None, permission: str | None) -> bool:
 
 
 class Party:
-    def __init__(self, db: Database, apple: Any, hub: Hub) -> None:
+    def __init__(self, db: Database, apple: Any, hub: Hub, audit: AuditLog | None = None) -> None:
         self.db = db
         self.apple = apple
         self.hub = hub
@@ -133,6 +133,7 @@ class Party:
         self.reviewer: AutoReviewer | None = None
         self._review_sem = asyncio.Semaphore(AUTO_REVIEW_CONCURRENCY)
         self._reviewing: set[int] = set()
+        self.audit = audit or AuditLog(db, hub)
 
     # -- lifecycle --------------------------------------------------------------
     async def load(self) -> None:
@@ -483,7 +484,7 @@ class Party:
     # -- requests ------------------------------------------------------------------
     @staticmethod
     def guest_label(guest_id: str) -> str:
-        return "Guest " + hashlib.sha256(guest_id.encode()).hexdigest()[:4].upper()
+        return guest_label(guest_id)
 
     def _request_out(self, r: dict[str, Any], admin: bool) -> dict[str, Any]:
         out = {
@@ -604,6 +605,20 @@ class Party:
             await self._insert_queue(track, "request", "end", request_id=rid)
         row = await self.db.fetchone("SELECT * FROM requests WHERE id=?", rid)
         assert row
+        await self.audit.record(
+            "request.create",
+            guest_id=guest_id,
+            ip=ip,
+            target_type="request",
+            target_id=rid,
+            target_label=track_label(track),
+            details={
+                "track": track_ref(track),
+                "status": row["status"],
+                "auto_review": review,
+                "speaker_id": row.get("speaker_id"),
+            },
+        )
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         return self._request_out(row, admin=False)
 
@@ -670,6 +685,15 @@ class Party:
             rid,
         ):
             raise ApiError(409, "That request was just decided, please refresh")
+        track = Track.from_dict(json.loads(row["track"]))
+        await self.audit.record(
+            "request.withdraw",
+            guest_id=guest_id,
+            target_type="request",
+            target_id=rid,
+            target_label=track_label(track),
+            details={"track": track_ref(track), "was": row["status"]},
+        )
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
 
     async def list_requests(self, status: str | None) -> list[dict[str, Any]]:
@@ -687,12 +711,15 @@ class Party:
         rows = await self.db.fetchall(sql, *args)
         return [self._request_out(r, admin=True) for r in rows]
 
-    async def approve_all(self, user: User | None, position: str = "end") -> int:
+    async def approve_all(
+        self, user: User | None, position: str = "end", reason: str | None = None
+    ) -> int:
         """Approve every pending request, oldest first."""
         rows = await self.db.fetchall("SELECT * FROM requests WHERE status='pending' ORDER BY id")
         if position == "next":
             rows.reverse()  # inserting each at "next" keeps oldest first
         approved = 0
+        done: list[dict[str, Any]] = []
         for row in rows:
             async with self.db.transaction():
                 # only if still pending: the guest may have withdrawn it meanwhile
@@ -706,16 +733,36 @@ class Party:
                     continue
                 approved += 1
                 track = Track.from_dict(json.loads(row["track"]))
+                done.append({"id": row["id"], "track": track_label(track)})
                 if not any(q["track"].id == track.id for q in self.queue):
                     await self._insert_queue(track, "request", position, request_id=row["id"], user=user)
+        if done:
+            done.sort(key=lambda d: d["id"])
+            await self.audit.record(
+                "request.approve_all",
+                user=user,
+                target_type="request",
+                target_label=f"{approved} request{'s' if approved != 1 else ''}",
+                details={"count": approved, "position": position, "requests": done, "reason": reason},
+            )
         if rows:
             await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         return approved
 
     async def set_require_approval(self, enabled: bool, user: User | None) -> int:
         """Turn approval on/off. Turning it off approves everything waiting."""
+        was = self._settings.get("require_approval", True)
         self._settings = await self.db.set_settings({"require_approval": bool(enabled)})
-        approved = 0 if enabled else await self.approve_all(user)
+        approved = 0 if enabled else await self.approve_all(user, reason="approval switched off")
+        if bool(was) != bool(enabled):
+            await self.audit.record(
+                "settings.require_approval",
+                user=user,
+                target_type="setting",
+                target_id="require_approval",
+                target_label="Require approval " + ("on" if enabled else "off"),
+                details={"enabled": bool(enabled), "approved_waiting": approved},
+            )
         self.changed()
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         return approved
@@ -762,13 +809,22 @@ class Party:
             await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         return len(rows)
 
-    async def recheck_request(self, rid: int) -> None:
+    async def recheck_request(self, rid: int, user: User | None = None) -> None:
         if not self.auto_review_enabled():
             raise ApiError(409, "Automatic approval is off")
         if not await self.db.execute_rowcount(
             "UPDATE requests SET auto_status='checking', auto_note=NULL WHERE id=? AND status='pending'", rid
         ):
             raise ApiError(409, "Only waiting requests can be re-checked")
+        row = await self.db.fetchone("SELECT track FROM requests WHERE id=?", rid)
+        track = Track.from_dict(json.loads(row["track"])) if row else None
+        await self.audit.record(
+            "request.recheck",
+            user=user,
+            target_type="request",
+            target_id=rid,
+            target_label=track_label(track) if track else None,
+        )
         self._start_review(rid)
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
 
@@ -795,16 +851,27 @@ class Party:
         except ReviewError as err:
             LOGGER.warning("Automatic review of request %s failed: %s", rid, err)
             await self._set_review(rid, "error", None, None, str(err)[:300])
+            await self._audit_review(rid, track, "request.auto_error", {"error": str(err)[:300]})
             return
         except Exception as err:  # never leave a request stuck on "checking"
             LOGGER.exception("Automatic review of request %s crashed", rid)
             await self._set_review(rid, "error", None, None, f"Review failed: {type(err).__name__}")
+            await self._audit_review(rid, track, "request.auto_error", {"error": type(err).__name__})
             return
         note = None if verdict.lyrics_found else "No lyrics found"
         threshold = float(self._settings.get("auto_approval_threshold", 90)) / 100
         # Settings may have changed while Jev was thinking: only act if still enabled.
+        verdict_details = {
+            "decision": verdict.decision,
+            "probability": round(verdict.probability, 4),
+            "threshold": threshold,
+            "note": note,
+            "model": str(s.get("auto_approval_model") or DEFAULT_MODEL),
+            "provider": str(s.get("auto_approval_provider") or "typesafe"),
+        }
         if verdict.probability < threshold or not self.auto_review_enabled():
             await self._set_review(rid, "flagged", verdict.decision, verdict.probability, note)
+            await self._audit_review(rid, track, "request.auto_flag", verdict_details)
             return
         approve = verdict.decision == "approve"
         status = "approved" if approve else "rejected"
@@ -823,6 +890,9 @@ class Party:
                 return  # withdrawn or decided by a person meanwhile
             if approve and not any(q["track"].id == track.id for q in self.queue):
                 await self._insert_queue(track, "request", "end", request_id=rid)
+        await self._audit_review(
+            rid, track, "request.auto_approve" if approve else "request.auto_reject", verdict_details
+        )
         LOGGER.info(
             "Auto-%s request %s (%s - %s, %.0f%%)",
             "approved" if approve else "rejected",
@@ -830,6 +900,17 @@ class Party:
             track.artist,
             track.title,
             verdict.probability * 100,
+        )
+
+    async def _audit_review(self, rid: int, track: Track, action: str, details: dict[str, Any]) -> None:
+        await self.audit.record(
+            action,
+            actor_kind="system",
+            actor_name="Jev (automatic review)",
+            target_type="request",
+            target_id=rid,
+            target_label=track_label(track),
+            details={"track": track_ref(track), **details},
         )
 
     async def _set_review(
@@ -867,6 +948,24 @@ class Party:
                 track = Track.from_dict(json.loads(row["track"]))
                 if not any(q["track"].id == track.id for q in self.queue):
                     await self._insert_queue(track, "request", position, request_id=rid, user=user)
+        track = Track.from_dict(json.loads(row["track"]))
+        await self.audit.record(
+            "request.approve" if approve else "request.reject",
+            user=user,
+            target_type="request",
+            target_id=rid,
+            target_label=track_label(track),
+            details={
+                "track": track_ref(track),
+                **({"position": position} if approve else {}),
+                "guest": guest_label(row["guest_id"]),
+                "auto": (
+                    {"status": row.get("auto_status"), "decision": row.get("auto_decision"),
+                     "probability": row.get("auto_probability")}
+                    if row.get("auto_status") else None
+                ),
+            },
+        )
         await self.hub.send_all({"type": "requests_changed"}, "approve_requests")
         out = await self.db.fetchone(
             "SELECT r.*, u.name AS decider_name, sp.name AS speaker_name FROM requests r "
@@ -937,8 +1036,18 @@ class Party:
     async def add_to_queue(self, track_id: str, position: str, user: User) -> None:
         track = await self.get_track(track_id)
         await self._insert_queue(track, "admin", position, user=user)
+        await self.audit.record(
+            "queue.add",
+            user=user,
+            target_type="track",
+            target_id=track.id,
+            target_label=track_label(track),
+            details={"track": track_ref(track), "position": position},
+        )
 
-    async def previous(self, at: float | None = None, track_id: str | None = None) -> str:
+    async def previous(
+        self, at: float | None = None, track_id: str | None = None, user: User | None = None
+    ) -> str:
         """Restart the current song, or go back to the one before it.
 
         Within PREVIOUS_RESTART seconds of a song's start this goes back: the previous
@@ -962,6 +1071,14 @@ class Party:
         if pos > PREVIOUS_RESTART or len(rows) < 2 or rows[0]["track_id"] != cur.track.id:
             eng.seek(0)
             self.changed()
+            await self.audit.record(
+                "player.restart",
+                user=user,
+                target_type="track",
+                target_id=cur.track.id,
+                target_label=track_label(cur.track),
+                details={"track": track_ref(cur.track), "at": round(pos, 1)},
+            )
             return "restart"
         prev = Track.from_dict(json.loads(rows[1]["track"]))
         first = self.queue[0]["position"] if self.queue else 1.0
@@ -1005,24 +1122,48 @@ class Party:
         # skip even past a track that is already locked in / being mixed in
         eng.skip(requeue=True)
         self._after_queue_change()
+        await self.audit.record(
+            "player.previous",
+            user=user,
+            target_type="track",
+            target_id=prev.id,
+            target_label=track_label(prev),
+            details={"track": track_ref(prev), "from": track_ref(cur.track), "at": round(pos, 1)},
+        )
         return "previous"
 
-    async def remove_from_queue(self, qid: int) -> None:
-        if not any(q["id"] == qid for q in self.queue):
+    async def remove_from_queue(self, qid: int, user: User | None = None) -> None:
+        item = next((q for q in self.queue if q["id"] == qid), None)
+        if not item:
             raise ApiError(404, "Queue item not found")
         if qid == self._locked_id():
             raise ApiError(409, "That song is already being mixed in; skip it once it starts")
+        index = self.queue.index(item)
         await self.db.execute("DELETE FROM queue WHERE id=?", qid)
         self.queue = [q for q in self.queue if q["id"] != qid]
         self._after_queue_change()
+        await self.audit.record(
+            "queue.remove",
+            user=user,
+            target_type="track",
+            target_id=item["track"].id,
+            target_label=track_label(item["track"]),
+            details={
+                "track": track_ref(item["track"]),
+                "index": index,
+                "source": item["source"],
+                "request_id": item.get("request_id"),
+            },
+        )
 
-    async def move_in_queue(self, qid: int, index: int) -> None:
+    async def move_in_queue(self, qid: int, index: int, user: User | None = None) -> None:
         item = next((q for q in self.queue if q["id"] == qid), None)
         if not item:
             raise ApiError(404, "Queue item not found")
         locked = self._locked_id()
         if qid == locked:
             raise ApiError(409, "That song is already being mixed in")
+        old_index = self.queue.index(item)
         rest = [q for q in self.queue if q["id"] != qid]
         min_index = 1 if rest and rest[0]["id"] == locked else 0
         index = max(min_index, min(index, len(rest)))
@@ -1034,9 +1175,18 @@ class Party:
             q["position"] = float(i + 1)
         self.queue = rest
         self._after_queue_change()
+        if index != old_index:
+            await self.audit.record(
+                "queue.move",
+                user=user,
+                target_type="track",
+                target_id=item["track"].id,
+                target_label=track_label(item["track"]),
+                details={"track": track_ref(item["track"]), "from": old_index, "to": index},
+            )
 
     # -- settings ----------------------------------------------------------------
-    async def update_settings(self, values: dict[str, Any]) -> dict[str, Any]:
+    async def update_settings(self, values: dict[str, Any], user: User | None = None) -> dict[str, Any]:
         clean: dict[str, Any] = {}
         for key, val in values.items():
             if key == "crossfade_mode":
@@ -1088,12 +1238,21 @@ class Party:
             clean[key] = val
         if clean.get("require_approval") is False and self._settings.get("require_approval", True):
             clean.pop("require_approval")
-            await self.set_require_approval(False, None)
+            await self.set_require_approval(False, user)
+        before = dict(self._settings)
         old_pl = self._settings.get("fallback_playlist_id")
         was_reviewing = self.auto_review_enabled()
         old_shuffle = self._settings.get("fallback_shuffle")
         self._settings = await self.db.set_settings(clean)
         self._sync_reviewer()
+        if diff := settings_diff(before, self._settings, clean):
+            await self.audit.record(
+                "settings.update",
+                user=user,
+                target_type="setting",
+                target_label=", ".join(sorted(diff)),
+                details={"changes": diff},
+            )
         if self._settings.get("fallback_playlist_id") != old_pl:
             self.fallback_tracks, self.fallback_order, self.fallback_ptr = [], [], 0
             self.fallback_played.clear()
