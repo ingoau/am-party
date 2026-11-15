@@ -10,8 +10,8 @@ import { PageHeader, errorText, flash } from "./common";
 import { usePermissionCatalog } from "./permissions";
 
 const PAGE_SIZE = 50;
-/** audit_changed can arrive many times a second at a busy party: wait for a quiet moment. */
-const LIVE_DEBOUNCE_MS = 1500;
+/** audit_changed can arrive many times a second at a busy party: refresh at most this often. */
+const LIVE_THROTTLE_MS = 1500;
 /** Safety net while the socket is down. */
 const POLL_MS = 30_000;
 /** Closer to the top than this (px), new entries are shown straight away instead of behind a button. */
@@ -41,7 +41,7 @@ const KIND_VALUES = new Set<string>(KINDS.map((k) => k.value).filter(Boolean));
 type Filters = { action: string; actor_kind: AuditActorKind | null; actor: number | null; q: string };
 
 export function AuditTab() {
-  const { clockOffset } = useLive();
+  const { clockOffset, status } = useLive();
   const [params, setParams] = useSearchParams();
   const catalog = usePermissionCatalog();
   const permLabel = useMemo(() => {
@@ -100,9 +100,22 @@ export function AuditTab() {
   const freshRef = useRef(fresh);
   freshRef.current = fresh;
 
-  // Every (re)load starts a new generation: anything an older one still delivers is dropped.
+  const nextBeforeRef = useRef(nextBefore);
+  nextBeforeRef.current = nextBefore;
+
+  // Every time the list is replaced wholesale (new filters, reload, catching up over a gap) a new
+  // generation starts: anything an older request still delivers (refresh, load more) is dropped.
   const gen = useRef(0);
   const ctl = useRef<AbortController | null>(null);
+
+  const replaceAll = (list: AuditEntry[], next: number | null) => {
+    gen.current++;
+    setEntries(list);
+    setNextBefore(next);
+    setFresh({ entries: [], gap: false });
+    setExpanded(new Set());
+    setError(null);
+  };
 
   const load = useCallback(() => {
     ctl.current?.abort();
@@ -113,9 +126,7 @@ export function AuditTab() {
       .audit(query(), c.signal)
       .then((r) => {
         if (g !== gen.current) return;
-        setEntries(r.entries);
-        setNextBefore(r.next_before);
-        setFresh({ entries: [], gap: false });
+        replaceAll(r.entries, r.next_before);
       })
       .catch((e) => {
         if (g !== gen.current || c.signal.aborted) return;
@@ -127,47 +138,56 @@ export function AuditTab() {
   useEffect(() => {
     setEntries(null);
     setExpanded(new Set());
+    setFresh({ entries: [], gap: false });
     load();
   }, [filterKey, load]);
   useEffect(() => () => ctl.current?.abort(), []);
 
+  /** Add newer entries on top, keeping the list newest first. */
+  const mergeIn = (newer: AuditEntry[]) =>
+    setEntries((cur) => {
+      if (!cur) return cur;
+      const ids = new Set(cur.map((e) => e.id));
+      return [...newer.filter((e) => !ids.has(e.id)), ...cur].sort((a, b) => b.id - a.id);
+    });
+
   /** Fetch the newest page and add only what's new, without disturbing pages loaded below. */
   const refreshing = useRef(false);
-  const refreshHead = useCallback(async () => {
-    const current = entriesRef.current;
-    if (current === null) return; // first load still running (or failed: the retry button reloads)
-    if (refreshing.current) return;
+  const rerun = useRef(false);
+  const refreshHead = useCallback(async function run(): Promise<void> {
+    if (entriesRef.current === null) return; // first load still running (or failed: the retry button reloads)
+    if (refreshing.current) {
+      rerun.current = true; // something changed while we were fetching: look again afterwards
+      return;
+    }
     refreshing.current = true;
     const g = gen.current;
     try {
       const r = await api.audit(query());
-      if (g !== gen.current) return;
-      const known = Math.max(freshRef.current.entries[0]?.id ?? 0, entriesRef.current?.[0]?.id ?? 0);
+      // Filters changed or the list was replaced meanwhile: this page belongs to another list.
+      if (g !== gen.current || entriesRef.current === null) return;
+      const held = freshRef.current;
+      const known = Math.max(held.entries[0]?.id ?? 0, entriesRef.current[0]?.id ?? 0);
       const newer = r.entries.filter((e) => e.id > known);
-      if (!newer.length) return;
-      // Everything on the newest page is new and there's more: we can't stitch it onto the list.
-      const gap = newer.length === r.entries.length && r.next_before !== null;
+      // Everything on the newest page is new and there's more: it can't be stitched onto the list.
+      const gap = newer.length > 0 && newer.length === r.entries.length && r.next_before !== null;
       if (window.scrollY < NEAR_TOP_PX) {
-        if (gap) {
-          setEntries(r.entries);
-          setNextBefore(r.next_before);
-          setExpanded(new Set());
+        if (gap || held.gap) replaceAll(r.entries, r.next_before);
+        else if (newer.length || held.entries.length) {
+          mergeIn([...newer, ...held.entries]);
           setFresh({ entries: [], gap: false });
-        } else showNewer(newer);
-      } else setFresh((f) => ({ entries: [...newer, ...f.entries], gap: f.gap || gap }));
+        }
+      } else if (newer.length) setFresh((f) => ({ entries: [...newer, ...f.entries], gap: f.gap || gap }));
     } catch {
       /* the next push or poll tries again */
     } finally {
       refreshing.current = false;
+      if (rerun.current) {
+        rerun.current = false;
+        void run();
+      }
     }
   }, []);
-
-  const showNewer = (newer: AuditEntry[]) =>
-    setEntries((cur) => {
-      if (!cur) return cur;
-      const ids = new Set(cur.map((e) => e.id));
-      return [...newer.filter((e) => !ids.has(e.id)), ...cur];
-    });
 
   const revealFresh = () => {
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -175,30 +195,44 @@ export function AuditTab() {
       load();
       return;
     }
-    showNewer(fresh.entries);
+    mergeIn(fresh.entries);
     setFresh({ entries: [], gap: false });
   };
 
+  // audit_changed can come many times a second: refresh at most every LIVE_THROTTLE_MS, and once
+  // more after the last push so nothing is missed.
+  const lastRefresh = useRef(0);
   const liveTimer = useRef<number | undefined>(undefined);
   useLiveEvent("audit_changed", () => {
-    window.clearTimeout(liveTimer.current);
-    liveTimer.current = window.setTimeout(() => void refreshHead(), LIVE_DEBOUNCE_MS);
+    if (liveTimer.current !== undefined) return; // a refresh is already scheduled and will see this one
+    const wait = Math.max(0, lastRefresh.current + LIVE_THROTTLE_MS - Date.now());
+    liveTimer.current = window.setTimeout(() => {
+      liveTimer.current = undefined;
+      lastRefresh.current = Date.now();
+      void refreshHead();
+    }, wait);
   });
+  useEffect(() => () => window.clearTimeout(liveTimer.current), []);
+  // Poll only while the socket is down; catch up once it's back.
   useEffect(() => {
+    if (status === "live") {
+      void refreshHead();
+      return;
+    }
     const t = window.setInterval(() => void refreshHead(), POLL_MS);
-    return () => {
-      window.clearInterval(t);
-      window.clearTimeout(liveTimer.current);
-    };
-  }, [refreshHead]);
+    return () => window.clearInterval(t);
+  }, [status, refreshHead]);
 
   const loadMore = async () => {
-    if (nextBefore === null || loadingMore) return;
+    const cursor = nextBefore;
+    if (cursor === null || loadingMore) return;
     setLoadingMore(true);
     const g = gen.current;
+    // Only valid for the list it was asked for, at the cursor it used.
+    const current = () => g === gen.current && nextBeforeRef.current === cursor;
     try {
-      const r = await api.audit(query({ before: nextBefore }));
-      if (g !== gen.current) return;
+      const r = await api.audit(query({ before: cursor }));
+      if (!current()) return;
       setEntries((cur) => {
         const list = cur ?? [];
         const ids = new Set(list.map((e) => e.id));
@@ -206,12 +240,11 @@ export function AuditTab() {
       });
       setNextBefore(r.next_before);
     } catch (e) {
-      if (g === gen.current) flash.err(e);
+      if (current()) flash.err(e);
     } finally {
-      if (g === gen.current) setLoadingMore(false);
+      setLoadingMore(false);
     }
   };
-  useEffect(() => setLoadingMore(false), [filterKey]);
 
   // Re-render relative times now and then.
   const [, setTick] = useState(0);
@@ -299,15 +332,29 @@ export function AuditTab() {
         </div>
       )}
 
+      {error && entries !== null && (
+        <div className="banner banner--err audit__error" role="alert">
+          <span>Couldn't load the newest entries: {error}</span>
+          <button className="btn btn--ghost btn--sm" onClick={load}>
+            Try again
+          </button>
+        </div>
+      )}
+
       {entries === null ? (
         error ? (
           <div className="empty-state">
             <strong>Couldn't load the audit log</strong>
             <span>{error}</span>
-            <div>
+            <div className="btn-group btn-group--wrap">
               <button className="btn btn--ghost btn--sm" onClick={load}>
                 Try again
               </button>
+              {filtered && (
+                <button className="btn btn--ghost btn--sm" onClick={clearAll}>
+                  Clear filters
+                </button>
+              )}
             </div>
           </div>
         ) : (
@@ -380,7 +427,7 @@ function AuditRow({
   onActor?: (id: number) => void;
 }) {
   const { text, used } = describe(e, permLabel);
-  const rest = Object.entries(e.details ?? {}).filter(([k, v]) => !used.includes(k) && v !== null && v !== undefined && v !== "");
+  const rest = detailRows(e.details ?? {}, used, permLabel);
   const name = actorLabel(e);
   const date = new Date(e.at * 1000);
   const detailsId = `audit-details-${e.id}`;
@@ -429,11 +476,11 @@ function AuditRow({
   );
 }
 
-function Kv({ k, v }: { k: string; v: unknown }) {
+function Kv({ k, v }: { k: string; v: string }) {
   return (
     <>
-      <dt>{k.replace(/_/g, " ")}</dt>
-      <dd>{fmtValue(v)}</dd>
+      <dt>{k}</dt>
+      <dd>{v}</dd>
     </>
   );
 }
@@ -517,23 +564,52 @@ function fmtPeriod(s: number): string {
   return `${s} s`;
 }
 
-/** Compact human text for any details value. */
-function fmtValue(v: unknown, settingsStyle = false): string {
+type FmtOpts = { settings?: boolean; perm?: (id: string) => string };
+const PERM_KEYS = new Set(["permissions", "granted", "revoked"]);
+const PCT_KEYS = new Set(["probability", "threshold"]);
+
+/** Compact human text for any details value; `key` (the details key) picks a format where it matters. */
+function fmtValue(v: unknown, opts: FmtOpts = {}, key = ""): string {
   if (v === null || v === undefined || v === "") return "—";
-  if (typeof v === "boolean") return settingsStyle ? (v ? "on" : "off") : v ? "yes" : "no";
-  if (typeof v === "number" || typeof v === "string") return String(v);
-  if (Array.isArray(v)) return v.length ? v.map((x) => fmtValue(x, settingsStyle)).join(", ") : "none";
+  if (typeof v === "boolean") return opts.settings ? (v ? "on" : "off") : v ? "yes" : "no";
+  if (typeof v === "number") {
+    if (key.endsWith("_at") && v > 1e9) return new Date(v * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    if (PCT_KEYS.has(key) && v >= 0 && v <= 1) return pct(v);
+    if (key.endsWith("user_id")) return `user #${v}`;
+    return String(v);
+  }
+  if (typeof v === "string") return PERM_KEYS.has(key) && opts.perm ? opts.perm(v) : v;
+  if (Array.isArray(v)) return v.length ? v.map((x) => fmtValue(x, opts, key)).join(", ") : "none";
   if (isObj(v)) {
     const t = asTrack(v);
     if (t) return t.artist ? `${t.title} – ${t.artist}` : t.title;
     if (asTrack(v.track)) return fmtValue(v.track);
+    if (typeof v.track === "string") return v.track; // {id, track: "Artist - Title"} (approve_all)
     if (asNum(v.requests) !== null && asNum(v.seconds) !== null) return `${v.requests} per ${fmtPeriod(v.seconds as number)}`;
-    if ("from" in v && "to" in v) return `${fmtValue(v.from, settingsStyle)} → ${fmtValue(v.to, settingsStyle)}`;
+    if ("from" in v && "to" in v) return `${fmtValue(v.from, opts, key)} → ${fmtValue(v.to, opts, key)}`;
     return Object.entries(v)
-      .map(([k, x]) => `${k.replace(/_/g, " ")}: ${fmtValue(x, settingsStyle)}`)
+      .filter(([, x]) => x !== null && x !== undefined)
+      .map(([k, x]) => `${k.replace(/_/g, " ")}: ${fmtValue(x, opts, k)}`)
       .join("; ");
   }
   return JSON.stringify(v);
+}
+
+/** The details the sentence didn't cover, as [label, text] rows. */
+function detailRows(d: Record<string, unknown>, used: string[], perm: (id: string) => string): [string, string][] {
+  const rows: [string, string][] = [];
+  for (const [k, v] of Object.entries(d)) {
+    if (used.includes(k) || v === null || v === undefined || v === "") continue;
+    // "<list>_more": n is how many items the server cut from <list>; shown with that list.
+    if (k.endsWith("_more") && k.slice(0, -5) in d) continue;
+    // Ids that sit next to the name they belong to.
+    if ((k === "user_id" && typeof d.user === "string") || (k === "from_user_id" && typeof d.from === "string")) continue;
+    let text = fmtValue(v, { perm }, k);
+    const more = asNum(d[`${k}_more`]);
+    if (more) text += ` …and ${more} more`;
+    rows.push([k.replace(/_/g, " "), text]);
+  }
+  return rows;
 }
 
 function describe(e: AuditEntry, permLabel: (id: string) => string): { text: ReactNode; used: string[] } {
@@ -715,9 +791,9 @@ function describe(e: AuditEntry, permLabel: (id: string) => string): { text: Rea
       let complete = shown.length === changes.length;
       const parts = shown.map(([k, c]) => {
         const label = SETTING_LABELS[k] ?? k.replace(/_/g, " ");
-        if (!isObj(c) || !("to" in c)) return `${label} ${clip(fmtValue(c, true))}`;
-        const from = fmtValue(c.from, true);
-        const to = fmtValue(c.to, true);
+        if (!isObj(c) || !("to" in c)) return `${label} ${clip(fmtValue(c, { settings: true }, k))}`;
+        const from = fmtValue(c.from, { settings: true }, k);
+        const to = fmtValue(c.to, { settings: true }, k);
         if (from.length > 40 || to.length > 40) complete = false;
         return `${label} ${clip(from)} → ${clip(to)}`;
       });
@@ -744,7 +820,14 @@ function describe(e: AuditEntry, permLabel: (id: string) => string): { text: Rea
 
     // People
     case "user.create":
-      return out(<>signed in for the first time{d.admin ? " and became an admin" : ""}</>, "admin");
+      return out(
+        <>
+          signed in for the first time
+          {d.admin ? ` (made admin${asStr(d.reason) ? `: ${d.reason}` : ""})` : ""}
+        </>,
+        "admin",
+        "reason",
+      );
     case "user.update": {
       const granted = Array.isArray(d.granted) ? (d.granted as string[]) : [];
       const revoked = Array.isArray(d.revoked) ? (d.revoked as string[]) : [];
@@ -757,10 +840,12 @@ function describe(e: AuditEntry, permLabel: (id: string) => string): { text: Rea
         <>
           changed access for {target(e, "someone")}
           {bits.length ? `: ${bits.join("; ")}` : ""}
+          {asStr(d.reason) && d.reason !== e.actor.name ? ` (${d.reason})` : ""}
         </>,
         "granted",
         "revoked",
         "admin",
+        "reason",
       );
     }
     case "user.delete":

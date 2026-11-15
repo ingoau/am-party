@@ -260,7 +260,7 @@ let nextAuditId = 1;
 const trackRef = (t) => ({ id: t.id, title: t.title, artist: t.artist });
 const trackLabel = (t) => (t.artist ? `${t.artist} - ${t.title}` : t.title);
 const userActor = (u) => ({ kind: "user", id: u?.id ?? null, name: u?.name ?? null, guest: null });
-const guestActor = (label) => ({ kind: "guest", id: null, name: null, guest: label });
+const guestActor = (label) => ({ kind: "guest", id: null, name: label, guest: label });
 const JEV = { kind: "system", id: null, name: "Jev (automatic review)", guest: null };
 const trackTarget = (t, type = "track", id = t.id) => ({ type, id: String(id), label: trackLabel(t) });
 const auditChanged = () => broadcast({ type: "audit_changed" }, (s) => hasPerm(sockUser(s), "view_audit_log"));
@@ -278,11 +278,12 @@ function addAudit(...args) {
   const T = (i) => TRACKS[i];
   const ago = (min) => now() - min * 60;
   const seed = [
+    [181, "user.create", userActor(sam), { type: "user", id: "1", label: "Sam Host" }, { admin: true, reason: "first user" }],
     [180, "auth.login", userActor(sam), { type: "user", id: "1", label: "Sam Host" }, null],
     [178, "settings.update", userActor(sam), { type: "setting", id: null, label: "party_name" }, { changes: { party_name: { from: "Party", to: "Sam's Birthday Bash" } } }],
     [176, "settings.update", userActor(sam), { type: "setting", id: null, label: "crossfade_duration, request_rate_limits" }, { changes: { crossfade_duration: { from: 8, to: 6 }, request_rate_limits: { from: [{ requests: 5, seconds: 600 }], to: [{ requests: 10, seconds: 600 }] } } }],
     [175, "credentials.jev_api_key", userActor(sam), { type: "credential", id: "typesafe", label: "Jev API key (typesafe)" }, { provider: "typesafe", change: "set" }],
-    [170, "user.create", userActor(alex), { type: "user", id: "2", label: "Alex Rivera" }, { email: "alex@example.com", admin: false, reason: null }],
+    [170, "user.create", userActor(alex), { type: "user", id: "2", label: "Alex Rivera" }, { admin: false, reason: null }],
     [168, "user.update", userActor(sam), { type: "user", id: "2", label: "Alex Rivera" }, { granted: ["approve_requests", "playback_skip"] }],
     [167, "user.update", userActor(sam), { type: "user", id: "4", label: "Priya Shah" }, { granted: ["queue_add", "queue_remove", "queue_reorder", "playback_pause", "playback_skip"] }],
     [160, "speaker.claim", userActor(sam), { type: "speaker", id: "spk-living", label: "Living room" }, null],
@@ -304,7 +305,10 @@ function addAudit(...args) {
     [64, "player.resume", userActor(priya), trackTarget(T(9)), { track: trackRef(T(9)), source: "admin" }],
     [60, "player.seek", userActor(lena), trackTarget(T(9)), { track: trackRef(T(9)), source: "admin", from: 62.4, to: 150 }],
     [55, "queue.remove", userActor(priya), trackTarget(T(13)), { track: trackRef(T(13)), index: 2, source: "request", request_id: 9004 }],
-    [50, "request.approve_all", userActor(alex), { type: "request", id: null, label: "2 requests" }, { count: 2, position: "end", requests: [{ id: 9005, track: trackRef(T(5)) }, { id: 9006, track: trackRef(T(14)) }], reason: null }],
+    [50, "request.approve_all", userActor(alex), { type: "request", id: null, label: "2 requests" }, { count: 2, position: "end", requests: [{ id: 9005, track: trackLabel(T(5)) }, { id: 9006, track: trackLabel(T(14)) }], reason: null }],
+    [45, "speaker.share", userActor(sam), { type: "speaker", id: "spk-living", label: "Living room" }, { mode: "share", expires_at: now() - 45 * 60 + 600 }],
+    [44, "speaker.share_accept", userActor(lena), { type: "speaker", id: "spk-living", label: "Living room" }, { mode: "share", from: "Sam Host", from_user_id: 1 }],
+    [42, "user.delete", userActor(sam), { type: "user", id: "9", label: "Old Account" }, { was_admin: false, permissions: ["approve_requests", "queue_add"], speakers: [] }],
     [40, "speaker.control", userActor(sam), { type: "speaker", id: "spk-living,spk-kitchen", label: "Living room, Kitchen bench" }, { volume: 70 }],
     [30, "settings.require_approval", userActor(sam), { type: "setting", id: "require_approval", label: "Require approval on" }, { enabled: true, approved_waiting: 0 }],
     [25, "auth.login_denied", { kind: "guest", id: null, name: "stranger@example.net", guest: null }, null, { reason: "not in AM_PARTY_ALLOWED_EMAILS/DOMAINS" }],
@@ -338,12 +342,18 @@ function auditQuery(sp, admin) {
     if (action && !(action.endsWith(".") ? e.action.startsWith(action) : e.action === action)) continue;
     if (actor && e.actor.id !== actor) continue;
     if (kind && e.actor.kind !== kind) continue;
-    // Like the backend: target label, actor name, action and the details JSON (not the guest label).
+    // Like the backend: target label, actor name (guests: their label), action and the details JSON.
     if (q && ![e.target?.label, e.actor.name, e.action, e.details && JSON.stringify(e.details)].some((x) => x && x.toLowerCase().includes(q))) continue;
     out.push(e);
   }
   const more = out.length > limit;
-  const entries = out.slice(0, limit).map(({ ip, ...e }) => (admin ? { ...e, ip } : e));
+  const entries = out.slice(0, limit).map(({ ip, ...e }) => {
+    if (admin) return { ...e, ip };
+    // Non-admins only see the domain of a refused sign-in's email.
+    if (e.action === "auth.login_denied" && e.actor.name?.includes("@"))
+      return { ...e, actor: { ...e.actor, name: `…@${e.actor.name.split("@").pop()}` } };
+    return e;
+  });
   return { entries, next_before: more ? entries[entries.length - 1].id : null };
 }
 
@@ -503,7 +513,7 @@ const server = http.createServer(async (req, res) => {
       broadcastState();
       requestsChanged();
       addAudit("request.approve_all", userActor(user), { type: "request", id: null, label: `${n} request${n === 1 ? "" : "s"}` },
-        { count: n, position, requests: waiting.map((r) => ({ id: r.id, track: trackRef(r.track) })), reason: null }, ip);
+        { count: n, position, requests: waiting.slice(0, 50).map((r) => ({ id: r.id, track: trackLabel(r.track) })), ...(waiting.length > 50 ? { requests_more: waiting.length - 50 } : {}), reason: null }, ip);
     }
     return json(res, 200, { ok: true, approved: n });
   }
